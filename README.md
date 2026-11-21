@@ -14,14 +14,16 @@ Android 11 引入了内联自动填充：自动填充服务（Bitwarden）把建
 | 环节 | 正常要求 | 本模块的做法 |
 | --- | --- | --- |
 | 系统侧 | 输入法在 `input-method` XML 里声明 `android:supportsInlineSuggestions="true"`，否则 `InputMethodManagerService` 不会向输入法索要请求 | 在 **system_server** 里把搜狗的 `InputMethodInfo.mInlineSuggestionsEnabled` 改为 `true`，并 hook `isInlineSuggestionsEnabled()` 兜底（`SystemHooks.java`） |
-| 输入法侧 | 实现 `onCreateInlineSuggestionsRequest()` 和 `onInlineSuggestionsResponse()`，并显示建议 | 在**搜狗进程**里 hook 这两个方法，把建议 inflate 后放进插在键盘上方的一条横向建议栏（`ImeHooks.java` / `InlineController.java`） |
+| 输入法侧 | 实现 `onCreateInlineSuggestionsRequest()` 和 `onInlineSuggestionsResponse()`，并显示建议 | 在**搜狗进程**里 hook 这两个方法，把建议 inflate 后像 Gboard 一样显示在**键盘内部**顶部工具栏的位置（`ImeHooks.java` / `InlineController.java`） |
 
 几个实现细节：
 
 - **不碰搜狗的类名**：先 hook `InputMethodService.onCreate()` 拿到搜狗真正的服务子类，再沿继承链找到每个方法“实际生效”的声明去 hook。
   这样搜狗即使重写了 `onComputeInsets()` 且不调用 `super`，hook 也有效。
-- **建议栏位置**：插在输入法窗口里 `android:id/inputArea`（承载搜狗键盘的 FrameLayout）前面，不修改搜狗自己的 View 层级。
-- **Insets 修正**：在搜狗算完 `Insets` 之后把建议栏区域加进可见/可触摸区域，否则建议栏点不动、或者会挡住输入框。
+- **建议栏位置**：作为覆盖层加在输入法窗口的 `android:id/inputArea`（承载搜狗键盘的 FrameLayout）里，盖在搜狗键盘顶部工具栏上，
+  用搜狗自己报告的 `contentTopInsets` 对齐键盘顶部。不占额外高度、不改应用的可用区域，所以建议出现/消失时键盘高度不变，页面不会跳动。
+- **何时隐藏**：切换输入框、没有匹配建议、搜狗正在组字（拼音候选词要用工具栏位置，组字结束后自动恢复）、或点了右侧的 ×（当前输入框内不再显示）。
+- **Insets**：只在搜狗使用 `TOUCHABLE_INSETS_REGION` 时把建议栏并进可触摸区域，不修改 content/visible insets。
 - **样式**：Bitwarden 要求请求里带 `androidx.autofill` 的 v1 样式 Bundle，否则会回退到下拉框，所以依赖了 `androidx.autofill:autofill`（`InlineStyles.java`）。
   建议条目的外观（背景色、字号等）只能通过这个样式影响，跟随系统深色模式。
 
@@ -59,7 +61,8 @@ LSPosed 管理器 → 日志，搜索 `[SogouInlineAutofill]`：
 
 - **完全没有 `onCreateInlineSuggestionsRequest`**：确认勾选了“系统框架”并重启；确认 Bitwarden 是当前自动填充服务且开启了内联自动填充。
 - **收到响应但 `count=0`**：Bitwarden 没有匹配的条目，或者它没能识别样式（看 Bitwarden 是否改为弹出下拉框）。
-- **建议栏显示但点不动 / 被遮挡**：搜狗的 `onComputeInsets` 行为比较特殊，可以在 `InlineController.adjustInsets()` 里调整。
+- **建议栏位置不对（盖住了按键或悬在键盘上方的空白处）**：日志里的 `ime: strip topMargin=N` 是对齐结果，可以在 `InlineController.updateStripPosition()` 里调整。
+- **建议栏点不动**：搜狗的触摸区域计算比较特殊，可以在 `InlineController.adjustInsets()` 里调整。
 - 部分国产 ROM 精简了系统的 `InlineSuggestionRenderService`（ExtServices），这种情况下系统无法渲染内联建议，与本模块无关。
 - 包名前缀 `com.sohu.inputmethod.sogou` 覆盖了官方版和小米版、vivo 版等渠道包；其他渠道包需在 LSPosed 里手动勾选作用域。
 
@@ -70,7 +73,7 @@ app/src/main/java/io/github/l1uz3/sogouautofill/
 ├── MainHook.java          入口，按进程分发
 ├── SystemHooks.java       system_server：伪装 supportsInlineSuggestions
 ├── ImeHooks.java          搜狗进程：定位服务类并 hook 相关方法
-├── InlineController.java  构造请求、显示建议栏、修正 Insets
+├── InlineController.java  构造请求、在键盘内显示建议栏
 ├── InlineStyles.java      androidx.autofill v1 样式
 └── L.java                 日志
 ```

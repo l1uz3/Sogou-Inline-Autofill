@@ -2,6 +2,7 @@ package io.github.l1uz3.sogouautofill;
 
 import android.inputmethodservice.InputMethodService;
 import android.os.Bundle;
+import android.view.View;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InlineSuggestionsResponse;
 
@@ -45,6 +46,21 @@ final class ImeHooks {
         } catch (Throwable t) {
             L.e("ime: failed to hook InputMethodService.onCreate", t);
         }
+
+        // 框架的 setInputView 会 removeAllViews() 清空 inputArea，建议栏需要重新挂上。
+        // 这里 hook 的是父类实现本身（真正清空 inputArea 的地方），搜狗重写时也一定会调用 super。
+        try {
+            XposedHelpers.findAndHookMethod(InputMethodService.class, "setInputView", View.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            InlineController c = controllerOf(param.thisObject);
+                            if (c != null) c.onInputViewReplaced();
+                        }
+                    });
+        } catch (Throwable t) {
+            L.e("ime: failed to hook InputMethodService.setInputView", t);
+        }
     }
 
     static InlineController controllerOf(Object ims) {
@@ -76,7 +92,23 @@ final class ImeHooks {
                     }
                 });
 
-        // 让键盘窗口的可触摸区域 / 内容区域把建议条也算进去
+        // 组字状态：candidatesStart/End != -1 表示搜狗正在组字（如拼音输入中），
+        // 此时工具栏位置要显示候选词，暂时隐藏建议栏
+        hookEffective(cls, "onUpdateSelection",
+                new Class<?>[]{int.class, int.class, int.class, int.class, int.class, int.class},
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        InlineController c = controllerOf(param.thisObject);
+                        if (c != null) {
+                            int candStart = (Integer) param.args[4];
+                            int candEnd = (Integer) param.args[5];
+                            c.setComposing(candStart >= 0 && candEnd > candStart);
+                        }
+                    }
+                });
+
+        // 记录搜狗报告的键盘顶部，并把建议栏并进可触摸区域
         hookEffective(cls, "onComputeInsets", new Class<?>[]{InputMethodService.Insets.class},
                 new XC_MethodHook() {
                     @Override
