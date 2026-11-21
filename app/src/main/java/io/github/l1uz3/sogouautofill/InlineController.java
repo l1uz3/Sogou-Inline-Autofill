@@ -113,13 +113,21 @@ final class InlineController {
         scrollContainer.removeAllViews();
 
         int margin = InlineStyles.dp(ims, 4);
+        int chipHeight = InlineStyles.dp(ims, CHIP_HEIGHT_DP);
         int added = 0;
         for (int i = 0; i < views.length; i++) {
             InlineContentView v = views[i];
             if (v == null) continue;
             if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            // 系统在 inflate 完成后会把渲染出的真实尺寸写进 v 的 LayoutParams，必须沿用。
+            // InlineContentView 内部是 SurfaceView，若给它 WRAP_CONTENT 会撑满父布局给的全部空间
+            // （之前的 bug：建议栏占满整个键盘窗口，键盘被挤出屏幕，看起来就是一片白屏）。
+            ViewGroup.LayoutParams own = v.getLayoutParams();
+            int w = own != null && own.width > 0 ? own.width : InlineStyles.dp(ims, 120);
+            int h = own != null && own.height > 0 ? Math.min(own.height, chipHeight) : chipHeight;
+            L.d("ime: suggestion " + i + " size=" + (own == null ? "null" : own.width + "x" + own.height)
+                    + " -> " + w + "x" + h);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(w, h);
             lp.setMargins(margin, 0, margin, 0);
             lp.gravity = Gravity.CENTER_VERTICAL;
             // “固定”条目（例如 Bitwarden 的打开密码库图标）放在左侧不随滚动
@@ -171,12 +179,16 @@ final class InlineController {
         if (strip == null) createStrip();
         if (strip.getParent() != parent) {
             if (strip.getParent() instanceof ViewGroup) ((ViewGroup) strip.getParent()).removeView(strip);
+            // 固定高度：无论子 View 怎么测量，建议栏都不可能再吃掉整个键盘窗口
             parent.addView(strip, parent.indexOfChild(inputArea),
-                    new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT));
+                    new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, stripHeight()));
             L.d("ime: strip attached to " + parent.getClass().getName());
         }
         return true;
+    }
+
+    private int stripHeight() {
+        return InlineStyles.dp(ims, CHIP_HEIGHT_DP + 8);
     }
 
     private void createStrip() {
@@ -186,7 +198,6 @@ final class InlineController {
         strip.setOrientation(LinearLayout.HORIZONTAL);
         strip.setGravity(Gravity.CENTER_VERTICAL);
         strip.setPadding(pad, pad, pad, pad);
-        strip.setMinimumHeight(InlineStyles.dp(ims, CHIP_HEIGHT_DP) + pad * 2);
         strip.setVisibility(View.GONE);
 
         pinnedContainer = new LinearLayout(ims);
