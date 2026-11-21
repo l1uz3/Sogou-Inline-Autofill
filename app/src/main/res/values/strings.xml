@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">搜狗内联自动填充</string>
+    <string name="xposed_description">让搜狗输入法支持 Android 11+ 键盘内联自动填充（Bitwarden 等），需勾选“系统框架”和“搜狗输入法”并重启</string>
+    <string-array name="xposed_scope">
+        <item>android</item>
+        <item>com.sohu.inputmethod.sogou</item>
+        <item>com.sohu.inputmethod.sogou.xiaomi</item>
+        <item>com.sohu.inputmethod.sogou.vivo</item>
+    </string-array>
+</resources>

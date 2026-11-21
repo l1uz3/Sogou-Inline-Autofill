@@ -1,0 +1,37 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'io.github.l1uz3.sogouautofill'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'io.github.l1uz3.sogouautofill'
+        // 键盘内联自动填充 (Inline Suggestions) 是 Android 11 (API 30) 引入的
+        minSdk 30
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+    }
+
+    buildTypes {
+        release {
+            // Xposed 入口通过 assets/xposed_init 反射加载，不做混淆最省事
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // 由 LSPosed 在运行时提供，不能打包进 APK
+    compileOnly 'de.robv.android.xposed:api:82'
+    // 用来生成 InlinePresentationSpec 的样式 Bundle（Bitwarden 等自动填充服务要求 v1 样式）
+    implementation 'androidx.autofill:autofill:1.1.0'
+}
