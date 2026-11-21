@@ -8,6 +8,7 @@ import android.util.Size;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.view.inputmethod.InlineSuggestion;
 import android.view.inputmethod.InlineSuggestionsRequest;
@@ -19,31 +20,31 @@ import android.widget.TextView;
 import android.widget.inline.InlineContentView;
 import android.widget.inline.InlinePresentationSpec;
 
+import java.lang.ref.WeakReference;
+import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.List;
 
 /**
- * 每个 InputMethodService 实例一个，负责：
- *  - 构造 InlineSuggestionsRequest；
- *  - 把 InlineSuggestionsResponse 里的建议 inflate 成 InlineContentView，显示在键盘里；
+ * 每个 InputMethodService 实例一个，负责构造 InlineSuggestionsRequest，
+ * 并把 InlineSuggestionsResponse 里的建议显示在键盘里。
  *
- * 显示方式参考 Gboard：建议栏是一层<b>覆盖</b>在搜狗键盘顶部工具栏上的 View，
- * 加在 android:id/inputArea（承载搜狗键盘的 FrameLayout）里、搜狗键盘 View 的上面。
- * 它不占用额外高度、不修改 contentTopInsets，所以建议栏出现/消失时键盘高度不变，
- * 应用不会被反复缩放（早期版本把建议栏作为单独一行插在键盘上方，手动输入时页面会乱跳）。
+ * 两种显示模式：
+ *  - NATIVE（搜狗 20.10.0 已适配，见 {@link SogouNative}）：建议栏是加在搜狗 Toolbar 里的透明 View，
+ *    显示时隐藏搜狗工具栏图标、保留皮肤背景，chip 半透明并按皮肤亮度选文字颜色，看起来和搜狗原生一致。
+ *    搜狗切到候选词（正在打字）时自动让位，切回工具栏时恢复。
+ *  - OVERLAY（回退方案，适配失败时使用）：不透明的建议栏覆盖在 inputArea 顶部。
  *
- * 建议栏何时隐藏：
- *  - 切换输入框 / 收起键盘（clear）；
- *  - 自动填充服务返回空列表（例如手动输入后没有匹配项）；
- *  - 搜狗正在组字（拼音输入中，需要用工具栏位置显示候选词），组字结束后自动恢复；
- *  - 用户点了右侧的 ×，在当前输入框内不再显示。
+ * 两种模式都不改变键盘高度、不修改 contentTopInsets，所以建议出现/消失时页面不会跳动。
  *
  * 所有回调都在主线程。
  */
 final class InlineController {
+    private enum Mode { NONE, NATIVE, OVERLAY }
+
     private static final int MAX_SUGGESTIONS = 8;
-    private static final int CHIP_HEIGHT_DP = 36;
-    private static final int STRIP_HEIGHT_DP = 44;
+    private static final int DEFAULT_CHIP_HEIGHT_DP = 36;
+    private static final int OVERLAY_STRIP_HEIGHT_DP = 44;
 
     private final InputMethodService ims;
 
@@ -53,30 +54,57 @@ final class InlineController {
     private HorizontalScrollView scrollView;
     private TextView closeButton;
 
+    private Mode mode = Mode.NONE;
+    private WeakReference<ViewGroup> toolbarRef = new WeakReference<>(null);
+    private ViewTreeObserver observedTreeObserver;
+    private final ViewTreeObserver.OnPreDrawListener preDrawListener = () -> !sync();
+
     /** 每次收到新响应或清空时递增，用于丢弃过期的异步 inflate 结果。 */
     private int generation;
-    /** 当前有可显示的建议。 */
     private boolean hasSuggestions;
-    /** 搜狗正在组字（有 composing text）。 */
+    /** 搜狗正在组字（仅 OVERLAY 模式使用；NATIVE 模式直接看搜狗工具栏组件的可见性）。 */
     private boolean composing;
     /** 用户在当前输入框点了 ×。 */
     private boolean dismissed;
-    /** 搜狗自己算出的键盘可见区域顶部（窗口坐标），用于把建议栏对齐到键盘顶部。 */
+
+    /** 本次请求使用的配色和 chip 高度。 */
+    private InlineStyles.Palette palette;
+    private int chipHeightPx;
+    private Boolean lastLightBackground;
+
+    /** OVERLAY 模式：搜狗报告的键盘顶部（窗口坐标），用于对齐。 */
     private int keyboardTopInWindow = -1;
 
     InlineController(InputMethodService ims) {
         this.ims = ims;
+        SogouNative.controller = this;
     }
 
     // ---------------------------------------------------------------- request
 
     InlineSuggestionsRequest onCreateRequest(Bundle uiExtras) {
         try {
-            Bundle style = InlineStyles.build(ims);
-            int h = InlineStyles.dp(ims, CHIP_HEIGHT_DP);
+            ViewGroup toolbar = SogouNative.ready ? findToolbar() : null;
+            chipHeightPx = InlineStyles.dp(ims, DEFAULT_CHIP_HEIGHT_DP);
+            if (toolbar != null) {
+                Boolean light = InlineStyles.isLightBackground(toolbar);
+                if (light != null) lastLightBackground = light;
+                boolean useLight = lastLightBackground != null ? lastLightBackground : !InlineStyles.isNight(ims);
+                palette = InlineStyles.Palette.translucent(useLight);
+                if (toolbar.getHeight() > 0) {
+                    chipHeightPx = clamp(toolbar.getHeight() - InlineStyles.dp(ims, 8),
+                            InlineStyles.dp(ims, 28), InlineStyles.dp(ims, 40));
+                }
+                L.d("ime: toolbar " + toolbar.getWidth() + "x" + toolbar.getHeight()
+                        + " light=" + light + " chipHeight=" + chipHeightPx);
+            } else {
+                palette = InlineStyles.Palette.opaque(InlineStyles.isNight(ims));
+            }
+
+            Bundle style = InlineStyles.build(ims, palette);
             int screenW = ims.getResources().getDisplayMetrics().widthPixels;
-            Size min = new Size(InlineStyles.dp(ims, 40), h);
-            Size max = new Size(Math.max(min.getWidth(), screenW * 2 / 3), h);
+            Size min = new Size(InlineStyles.dp(ims, 40), chipHeightPx);
+            Size max = new Size(Math.max(min.getWidth(), screenW * 2 / 3), chipHeightPx);
             InlinePresentationSpec spec = new InlinePresentationSpec.Builder(min, max)
                     .setStyle(style)
                     .build();
@@ -133,7 +161,7 @@ final class InlineController {
         scrollContainer.removeAllViews();
 
         int margin = InlineStyles.dp(ims, 4);
-        int chipHeight = InlineStyles.dp(ims, CHIP_HEIGHT_DP);
+        int maxH = chipHeightPx > 0 ? chipHeightPx : InlineStyles.dp(ims, DEFAULT_CHIP_HEIGHT_DP);
         int added = 0;
         for (int i = 0; i < views.length; i++) {
             InlineContentView v = views[i];
@@ -143,7 +171,7 @@ final class InlineController {
             // 给它 WRAP_CONTENT 会撑满父布局给的全部空间。
             ViewGroup.LayoutParams own = v.getLayoutParams();
             int w = own != null && own.width > 0 ? own.width : InlineStyles.dp(ims, 120);
-            int h = own != null && own.height > 0 ? Math.min(own.height, chipHeight) : chipHeight;
+            int h = own != null && own.height > 0 ? Math.min(own.height, maxH) : maxH;
             L.d("ime: suggestion " + i + " size=" + (own == null ? "null" : own.width + "x" + own.height)
                     + " -> " + w + "x" + h);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(w, h);
@@ -159,13 +187,11 @@ final class InlineController {
             removeSuggestions();
             return;
         }
-        boolean night = InlineStyles.isNight(ims);
-        strip.setBackgroundColor(night ? 0xFF202124 : 0xFFF1F3F4);
-        closeButton.setTextColor(night ? 0xFFBDC1C6 : 0xFF5F6368);
+        applyStripColors();
         pinnedContainer.setVisibility(pinnedContainer.getChildCount() > 0 ? View.VISIBLE : View.GONE);
         scrollView.scrollTo(0, 0);
         hasSuggestions = true;
-        updateVisibility();
+        sync();
     }
 
     /** 切换输入框 / 收起键盘：清空建议并重置“已关闭”状态。 */
@@ -181,50 +207,174 @@ final class InlineController {
         if (strip == null) return;
         pinnedContainer.removeAllViews();
         scrollContainer.removeAllViews();
-        updateVisibility();
+        sync();
     }
 
-    /** 搜狗组字状态变化（来自 onUpdateSelection 的 candidatesStart/End）。 */
+    /** 搜狗组字状态变化（来自 onUpdateSelection），仅 OVERLAY 模式使用。 */
     void setComposing(boolean value) {
         if (composing == value) return;
         composing = value;
-        updateVisibility();
+        sync();
     }
 
-    /** 搜狗调用了 setInputView：inputArea 被 removeAllViews，需要把建议栏重新挂上去。 */
+    /** 搜狗调用了 setInputView（inputArea 被清空）。 */
     void onInputViewReplaced() {
-        if (strip != null && strip.getParent() == null && hasSuggestions) {
-            ensureStrip();
-            updateVisibility();
-        }
+        reattachIfNeeded();
     }
 
-    private void updateVisibility() {
+    /** 搜狗调用了 Toolbar.setCandidatesView（Toolbar 被清空）。 */
+    void onToolbarContentReplaced() {
+        reattachIfNeeded();
+    }
+
+    private void reattachIfNeeded() {
         if (strip == null) return;
-        boolean visible = hasSuggestions && !composing && !dismissed;
-        int v = visible ? View.VISIBLE : View.GONE;
-        if (strip.getVisibility() != v) strip.setVisibility(v);
+        if (hasSuggestions && strip.getParent() == null) ensureStrip();
+        sync();
+    }
+
+    /**
+     * 根据当前状态决定建议栏是否显示，NATIVE 模式下同时控制是否隐藏搜狗工具栏图标。
+     * 在每帧绘制前（OnPreDrawListener）和状态变化时调用。返回是否有改动。
+     */
+    private boolean sync() {
+        if (strip == null) return false;
+        boolean want = hasSuggestions && !dismissed && strip.getParent() != null;
+        ViewGroup toolbar = mode == Mode.NATIVE ? toolbarRef.get() : null;
+        if (mode == Mode.NATIVE) {
+            // 工具栏图标组件不可见 = 搜狗在显示候选词等，让位
+            want &= toolbar != null && candidateContainerVisible(toolbar) && SogouNative.isFunctionViewVisible();
+        } else {
+            want &= !composing;
+        }
+
+        boolean changed = false;
+        int v = want ? View.VISIBLE : View.GONE;
+        if (strip.getVisibility() != v) {
+            strip.setVisibility(v);
+            changed = true;
+        }
+        boolean suppress = want && mode == Mode.NATIVE;
+        if (SogouNative.suppressFunctionDraw != suppress) {
+            SogouNative.suppressFunctionDraw = suppress;
+            if (toolbar != null) invalidateTree(toolbar);
+            changed = true;
+        }
+        return changed;
     }
 
     // ---------------------------------------------------------------- view
 
-    /** 确保建议栏已作为覆盖层加在 inputArea 里（搜狗键盘 View 之上）。 */
     private boolean ensureStrip() {
+        if (strip == null) createStrip();
+
+        if (SogouNative.ready) {
+            ViewGroup toolbar = findToolbar();
+            if (toolbar != null) {
+                attachNative(toolbar);
+                return true;
+            }
+            L.i("ime: Sogou Toolbar not found in window, using overlay");
+        }
         FrameLayout inputArea = findInputArea();
         if (inputArea == null) return false;
+        attachOverlay(inputArea);
+        return true;
+    }
 
-        if (strip == null) createStrip();
+    private void attachNative(ViewGroup toolbar) {
+        if (strip.getParent() != toolbar) {
+            detachStrip();
+            toolbar.addView(strip, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            L.d("ime: strip attached inside Sogou Toolbar");
+        } else if (toolbar.getChildAt(toolbar.getChildCount() - 1) != strip) {
+            strip.bringToFront();
+        }
+        mode = Mode.NATIVE;
+        observe(toolbar);
+    }
+
+    private void attachOverlay(FrameLayout inputArea) {
         if (strip.getParent() != inputArea) {
-            if (strip.getParent() instanceof ViewGroup) ((ViewGroup) strip.getParent()).removeView(strip);
-            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, InlineStyles.dp(ims, STRIP_HEIGHT_DP), Gravity.TOP);
+            detachStrip();
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    InlineStyles.dp(ims, OVERLAY_STRIP_HEIGHT_DP), Gravity.TOP);
             inputArea.addView(strip, lp); // 最后添加 = 绘制在最上层
             L.d("ime: strip attached as overlay of inputArea");
         } else if (inputArea.getChildAt(inputArea.getChildCount() - 1) != strip) {
             strip.bringToFront();
         }
-        updateStripPosition(inputArea);
-        return true;
+        mode = Mode.OVERLAY;
+        observe(inputArea);
+        updateOverlayPosition(inputArea);
+    }
+
+    private void detachStrip() {
+        if (strip.getParent() instanceof ViewGroup) ((ViewGroup) strip.getParent()).removeView(strip);
+    }
+
+    private void observe(View v) {
+        ViewTreeObserver vto = v.getViewTreeObserver();
+        if (vto == observedTreeObserver && vto.isAlive()) return;
+        if (observedTreeObserver != null && observedTreeObserver.isAlive()) {
+            observedTreeObserver.removeOnPreDrawListener(preDrawListener);
+        }
+        vto.addOnPreDrawListener(preDrawListener);
+        observedTreeObserver = vto;
+    }
+
+    private void applyStripColors() {
+        InlineStyles.Palette p = palette != null ? palette : InlineStyles.Palette.opaque(InlineStyles.isNight(ims));
+        if (mode == Mode.NATIVE) {
+            strip.setBackground(null); // 透出搜狗皮肤
+        } else {
+            strip.setBackgroundColor(InlineStyles.isNight(ims) ? 0xFF202124 : 0xFFF1F3F4);
+        }
+        closeButton.setTextColor(p.subtitle);
+    }
+
+    private ViewGroup findToolbar() {
+        ViewGroup cached = toolbarRef.get();
+        if (cached != null && cached.isAttachedToWindow()) return cached;
+        try {
+            Window window = ims.getWindow().getWindow();
+            if (window == null || SogouNative.toolbarClass == null) return null;
+            ArrayDeque<View> queue = new ArrayDeque<>();
+            queue.add(window.getDecorView());
+            while (!queue.isEmpty()) {
+                View v = queue.poll();
+                if (SogouNative.toolbarClass.isInstance(v)) {
+                    toolbarRef = new WeakReference<>((ViewGroup) v);
+                    return (ViewGroup) v;
+                }
+                if (v instanceof ViewGroup) {
+                    ViewGroup g = (ViewGroup) v;
+                    for (int i = 0; i < g.getChildCount(); i++) queue.add(g.getChildAt(i));
+                }
+            }
+        } catch (Throwable t) {
+            L.e("ime: failed to search Sogou Toolbar", t);
+        }
+        return null;
+    }
+
+    /** Toolbar 里搜狗的候选区（除建议栏外的子 View）是否可见。 */
+    private boolean candidateContainerVisible(ViewGroup toolbar) {
+        if (!toolbar.isShown()) return false;
+        for (int i = 0; i < toolbar.getChildCount(); i++) {
+            View c = toolbar.getChildAt(i);
+            if (c != strip) return c.getVisibility() == View.VISIBLE;
+        }
+        return false;
+    }
+
+    private static void invalidateTree(View v) {
+        v.invalidate();
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) invalidateTree(g.getChildAt(i));
+        }
     }
 
     private FrameLayout findInputArea() {
@@ -239,27 +389,22 @@ final class InlineController {
         return null;
     }
 
-    /**
-     * 把建议栏对齐到搜狗键盘的可见顶部。
-     * 搜狗的键盘 View 顶部可能有一块透明区域（用于气泡等），所以不能简单放在 inputArea 顶部，
-     * 而是用搜狗自己在 onComputeInsets 里报告的 contentTopInsets 作为键盘顶部。
-     */
-    private void updateStripPosition(View inputArea) {
-        if (strip == null || !(strip.getLayoutParams() instanceof FrameLayout.LayoutParams)) return;
-        int stripH = InlineStyles.dp(ims, STRIP_HEIGHT_DP);
+    /** OVERLAY 模式：用搜狗报告的 contentTopInsets 把建议栏对齐到键盘可见顶部。 */
+    private void updateOverlayPosition(View inputArea) {
+        if (mode != Mode.OVERLAY || !(strip.getLayoutParams() instanceof FrameLayout.LayoutParams)) return;
+        int stripH = InlineStyles.dp(ims, OVERLAY_STRIP_HEIGHT_DP);
         int margin = 0;
         if (keyboardTopInWindow >= 0 && inputArea.getHeight() > 0) {
             int[] loc = new int[2];
             inputArea.getLocationInWindow(loc);
             int y = keyboardTopInWindow - loc[1];
-            // 超出范围（悬浮键盘、全屏等异常情况）就退回到 inputArea 顶部
             if (y > 0 && y + stripH <= inputArea.getHeight()) margin = y;
         }
         FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) strip.getLayoutParams();
         if (lp.topMargin != margin) {
             lp.topMargin = margin;
             strip.setLayoutParams(lp);
-            L.d("ime: strip topMargin=" + margin);
+            L.d("ime: overlay strip topMargin=" + margin);
         }
     }
 
@@ -291,37 +436,37 @@ final class InlineController {
         strip.addView(scrollView, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
-        // × ：在当前输入框内关闭建议栏，露出搜狗原本的工具栏
+        // × ：在当前输入框内关闭建议，恢复搜狗原本的工具栏
         closeButton = new TextView(ims);
         closeButton.setText("✕");
-        closeButton.setTextSize(16);
+        closeButton.setTextSize(15);
         closeButton.setGravity(Gravity.CENTER);
         closeButton.setContentDescription("关闭自动填充建议");
         closeButton.setOnClickListener(v -> {
             dismissed = true;
-            updateVisibility();
+            sync();
         });
         strip.addView(closeButton, new LinearLayout.LayoutParams(
-                InlineStyles.dp(ims, 44), ViewGroup.LayoutParams.MATCH_PARENT));
+                InlineStyles.dp(ims, 40), ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    private static int clamp(int v, int lo, int hi) {
+        return Math.max(lo, Math.min(hi, v));
     }
 
     // ---------------------------------------------------------------- insets
 
     /**
-     * 在搜狗算完 Insets 之后调用。
-     * 建议栏是键盘内部的覆盖层，所以<b>不修改</b> contentTopInsets / visibleTopInsets（保证应用不会被缩放），
-     * 只做两件事：
-     *  - 记下搜狗报告的键盘顶部，用于对齐建议栏；
+     * 在搜狗算完 Insets 之后调用。建议栏在键盘内部，所以<b>不修改</b> content/visible insets（应用不会被缩放）。
+     *  - OVERLAY 模式记下键盘顶部用于对齐；
      *  - 如果搜狗用的是 TOUCHABLE_INSETS_REGION，把建议栏区域并进可触摸区域。
      */
     void adjustInsets(InputMethodService.Insets out) {
-        int top = out.contentTopInsets;
-        if (top != keyboardTopInWindow) {
-            keyboardTopInWindow = top;
+        if (mode == Mode.OVERLAY && out.contentTopInsets != keyboardTopInWindow) {
+            keyboardTopInWindow = out.contentTopInsets;
             if (strip != null && strip.getParent() instanceof View) {
                 final View parent = (View) strip.getParent();
-                // 正处于 ViewRootImpl 的遍历过程中，改布局放到下一帧
-                strip.post(() -> updateStripPosition(parent));
+                strip.post(() -> updateOverlayPosition(parent)); // 正处于遍历过程中，下一帧再改布局
             }
         }
 

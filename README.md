@@ -18,14 +18,23 @@ Android 11 引入了内联自动填充：自动填充服务（Bitwarden）把建
 
 几个实现细节：
 
-- **不碰搜狗的类名**：先 hook `InputMethodService.onCreate()` 拿到搜狗真正的服务子类，再沿继承链找到每个方法“实际生效”的声明去 hook。
-  这样搜狗即使重写了 `onComputeInsets()` 且不调用 `super`，hook 也有效。
-- **建议栏位置**：作为覆盖层加在输入法窗口的 `android:id/inputArea`（承载搜狗键盘的 FrameLayout）里，盖在搜狗键盘顶部工具栏上，
-  用搜狗自己报告的 `contentTopInsets` 对齐键盘顶部。不占额外高度、不改应用的可用区域，所以建议出现/消失时键盘高度不变，页面不会跳动。
-- **何时隐藏**：切换输入框、没有匹配建议、搜狗正在组字（拼音候选词要用工具栏位置，组字结束后自动恢复）、或点了右侧的 ×（当前输入框内不再显示）。
-- **Insets**：只在搜狗使用 `TOUCHABLE_INSETS_REGION` 时把建议栏并进可触摸区域，不修改 content/visible insets。
-- **样式**：Bitwarden 要求请求里带 `androidx.autofill` 的 v1 样式 Bundle，否则会回退到下拉框，所以依赖了 `androidx.autofill:autofill`（`InlineStyles.java`）。
-  建议条目的外观（背景色、字号等）只能通过这个样式影响，跟随系统深色模式。
+- **不碰搜狗的生命周期类名**：先 hook `InputMethodService.onCreate()` 拿到搜狗真正的服务子类（`SogouIME`），再沿继承链找到每个方法“实际生效”的声明去 hook。
+- **原生显示（搜狗 20.10.0 已适配，`SogouNative.java`）**：通过反编译确认，搜狗键盘顶部一行的结构是
+  ```
+  com.sogou.core.ui.view.Toolbar (FrameLayout)
+    └─ IMEInputCandidateViewContainer   绘制皮肤里的工具栏背景
+         └─ ImeInputCandidateRootView   搜狗自研的虚拟组件框架
+              ├─ NewIMEFunctionCandidateView   空闲时的工具栏图标（组件）
+              └─ NewCandidateView              打字时的候选词（组件）
+  ```
+  建议栏作为**透明** View 加进 `Toolbar`；有建议时跳过工具栏图标组件的绘制（`N1`/`L0`），皮肤背景照常由搜狗绘制，
+  chip 用半透明底色、并按皮肤亮度选深/浅色文字，看起来就像搜狗自己显示的建议。
+  搜狗切到候选词（正在打拼音）时，工具栏图标组件会被搜狗隐藏（`Component.x1()` 不再是 VISIBLE），建议自动让位，切回来后恢复。
+- **回退方案**：`x1` / `N1` / `L0` 是混淆名，换搜狗版本可能失效；任何一步找不到时自动退回通用方案——不透明建议栏覆盖在键盘顶部。
+- **不会让页面跳动**：两种方案都在键盘内部显示，不改变键盘高度、不修改 `contentTopInsets`。
+- **样式**：Bitwarden 要求请求里带 `androidx.autofill` 的 v1 样式 Bundle，否则会回退到下拉框（`InlineStyles.java`）。
+  系统渲染建议用的 Surface 是透明格式，所以半透明 chip 能透出皮肤。
+- 右侧的 × 可以在当前输入框内关闭建议，恢复搜狗原本的工具栏。
 
 ## 使用
 
@@ -53,7 +62,9 @@ LSPosed 管理器 → 日志，搜索 `[SogouInlineAutofill]`：
 | --- | --- |
 | `system_server: hooked InputMethodInfo constructors` | 系统框架作用域生效 |
 | `system_server: forced supportsInlineSuggestions=true for ...` | 搜狗的输入法信息已被修改 |
+| `ime: native Sogou toolbar integration ready` | 原生显示可用（没有这行、而是 `unavailable, falling back to overlay` 说明搜狗版本不匹配，使用回退方案） |
 | `ime: InputMethodService implementation = ...` | 已注入搜狗进程，并找到其输入法服务类 |
+| `ime: strip attached inside Sogou Toolbar` | 建议栏已放进搜狗工具栏 |
 | `ime: onCreateInlineSuggestionsRequest -> ...` | 系统向搜狗索要了内联请求（没有这行说明系统侧没生效，或自动填充服务未触发） |
 | `ime: onInlineSuggestionsResponse, count=N` | 收到 Bitwarden 的建议 |
 
@@ -61,7 +72,7 @@ LSPosed 管理器 → 日志，搜索 `[SogouInlineAutofill]`：
 
 - **完全没有 `onCreateInlineSuggestionsRequest`**：确认勾选了“系统框架”并重启；确认 Bitwarden 是当前自动填充服务且开启了内联自动填充。
 - **收到响应但 `count=0`**：Bitwarden 没有匹配的条目，或者它没能识别样式（看 Bitwarden 是否改为弹出下拉框）。
-- **建议栏位置不对（盖住了按键或悬在键盘上方的空白处）**：日志里的 `ime: strip topMargin=N` 是对齐结果，可以在 `InlineController.updateStripPosition()` 里调整。
+- **建议文字颜色和皮肤不搭**：颜色是按工具栏平均亮度自动选的（日志 `ime: toolbar WxH light=...`），可以在 `InlineStyles.Palette.translucent()` 里调整。
 - **建议栏点不动**：搜狗的触摸区域计算比较特殊，可以在 `InlineController.adjustInsets()` 里调整。
 - 部分国产 ROM 精简了系统的 `InlineSuggestionRenderService`（ExtServices），这种情况下系统无法渲染内联建议，与本模块无关。
 - 包名前缀 `com.sohu.inputmethod.sogou` 覆盖了官方版和小米版、vivo 版等渠道包；其他渠道包需在 LSPosed 里手动勾选作用域。
@@ -73,6 +84,7 @@ app/src/main/java/io/github/l1uz3/sogouautofill/
 ├── MainHook.java          入口，按进程分发
 ├── SystemHooks.java       system_server：伪装 supportsInlineSuggestions
 ├── ImeHooks.java          搜狗进程：定位服务类并 hook 相关方法
+├── SogouNative.java       搜狗 20.10.0 工具栏原生集成（版本相关）
 ├── InlineController.java  构造请求、在键盘内显示建议栏
 ├── InlineStyles.java      androidx.autofill v1 样式
 └── L.java                 日志

@@ -34,6 +34,7 @@ final class ImeHooks {
 
     static void install(XC_LoadPackage.LoadPackageParam lpparam) {
         L.i("ime: loaded into " + lpparam.packageName + " / " + lpparam.processName);
+        SogouNative.install(lpparam.classLoader);
         try {
             XposedHelpers.findAndHookMethod(InputMethodService.class, "onCreate", new XC_MethodHook() {
                 @Override
@@ -67,7 +68,7 @@ final class ImeHooks {
         return (InlineController) XposedHelpers.getAdditionalInstanceField(ims, CONTROLLER_KEY);
     }
 
-    private static synchronized void hookServiceClass(Class<?> cls) {
+    private static void hookServiceClass(Class<?> cls) {
         L.i("ime: InputMethodService implementation = " + cls.getName());
 
         // 系统向输入法索要内联建议请求：返回我们构造的 InlineSuggestionsRequest
@@ -131,8 +132,11 @@ final class ImeHooks {
         hookEffective(cls, "onDestroy", new Class<?>[0], clear);
     }
 
-    /** 在继承链上找到最先声明该方法的类（即虚分派实际调用的实现）并 hook。 */
-    private static void hookEffective(Class<?> cls, String name, Class<?>[] types, XC_MethodHook hook) {
+    /**
+     * 在继承链上找到最先声明该方法的类（即虚分派实际调用的实现）并 hook。
+     * 同一个 Method 只 hook 一次。返回是否找到该方法。
+     */
+    static synchronized boolean hookEffective(Class<?> cls, String name, Class<?>[] types, XC_MethodHook hook) {
         for (Class<?> k = cls; k != null; k = k.getSuperclass()) {
             Method m;
             try {
@@ -143,15 +147,17 @@ final class ImeHooks {
                 L.e("ime: cannot inspect " + k.getName() + "#" + name, t);
                 continue;
             }
-            if (!HOOKED.add(m)) return;
+            if (!HOOKED.add(m)) return true;
             try {
                 XposedBridge.hookMethod(m, hook);
                 L.d("ime: hooked " + k.getName() + "#" + name);
             } catch (Throwable t) {
                 L.e("ime: failed to hook " + k.getName() + "#" + name, t);
+                return false;
             }
-            return;
+            return true;
         }
-        L.i("ime: method not found: " + name);
+        L.i("ime: method not found: " + cls.getName() + "#" + name);
+        return false;
     }
 }
