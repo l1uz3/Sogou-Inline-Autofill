@@ -31,10 +31,6 @@ Android 11 引入了内联自动填充：自动填充服务（Bitwarden）把建
   皮肤背景照常由搜狗绘制。样式模仿搜狗原生的剪贴板栏：chip 完全透明，文字颜色和字号直接读皮肤里候选词的样式
   （`k.m0("CandidateWordView").x0()`，与剪贴板栏取法相同），图标染成文字色，条目之间用细竖线分隔，右侧是细线 ×。
   （Bitwarden 的“打开密码库”盾牌图标被 Bitwarden 标记为不可着色，会保留品牌蓝色。）
-- **用户名优先（`SliceSwap.java`）**：Bitwarden 的标题是条目名（通常是域名），副标题是用户名，系统按“标题在前”排版。
-  模块在 system_server 里把 `InlinePresentation` 的 Slice 中 `inline_title` / `inline_subtitle` 对调，用户名显示在前、域名作为暗色副文字。
-  只在两者都有时交换，对所有输入法生效；不需要可把 `SystemHooks.SWAP_TITLE_AND_SUBTITLE` 改为 false。
-  搜狗切到候选词（正在打拼音）时，工具栏图标组件会被搜狗隐藏（`Component.x1()` 不再是 VISIBLE），建议自动让位，切回来后恢复。
 - **回退方案**：`x1` / `N1` / `L0` 是混淆名，换搜狗版本可能失效；任何一步找不到时自动退回通用方案——不透明建议栏覆盖在键盘顶部。
 - **不会让页面跳动**：两种方案都在键盘内部显示，不改变键盘高度、不修改 `contentTopInsets`。
 - **样式**：Bitwarden 要求请求里带 `androidx.autofill` 的 v1 样式 Bundle，否则会回退到下拉框（`InlineStyles.java`）。
@@ -67,7 +63,6 @@ LSPosed 管理器 → 日志，搜索 `[SogouInlineAutofill]`：
 | --- | --- |
 | `system_server: hooked InputMethodInfo constructors` | 系统框架作用域生效 |
 | `system_server: forced supportsInlineSuggestions=true for ...` | 搜狗的输入法信息已被修改 |
-| `system_server: hooked InlinePresentation (username first)` | 用户名优先已启用 |
 | `ime: native Sogou toolbar integration ready` | 原生显示可用（没有这行、而是 `unavailable, falling back to overlay` 说明搜狗版本不匹配，使用回退方案） |
 | `ime: InputMethodService implementation = ...` | 已注入搜狗进程，并找到其输入法服务类 |
 | `ime: strip attached inside Sogou Toolbar` | 建议栏已放进搜狗工具栏 |
@@ -88,8 +83,7 @@ LSPosed 管理器 → 日志，搜索 `[SogouInlineAutofill]`：
 ```
 app/src/main/java/io/github/l1uz3/sogouautofill/
 ├── MainHook.java          入口，按进程分发
-├── SystemHooks.java       system_server：伪装 supportsInlineSuggestions、用户名优先
-├── SliceSwap.java         对调内联建议的标题/副标题
+├── SystemHooks.java       system_server：伪装 supportsInlineSuggestions
 ├── ImeHooks.java          搜狗进程：定位服务类并 hook 相关方法
 ├── SogouNative.java       搜狗 20.10.0 工具栏原生集成（版本相关）
 ├── InlineController.java  构造请求、在键盘内显示建议栏

@@ -50,7 +50,7 @@ final class InlineController {
 
     private final InputMethodService ims;
 
-    private LinearLayout strip;          // 整条：[固定区][可横向滚动区][×]
+    private StripLayout strip;          // 整条：[固定区][可横向滚动区][×]
     private LinearLayout pinnedContainer;
     private LinearLayout scrollContainer;
     private HorizontalScrollView scrollView;
@@ -306,6 +306,7 @@ final class InlineController {
         } else if (toolbar.getChildAt(toolbar.getChildCount() - 1) != strip) {
             strip.bringToFront();
         }
+        strip.matchSibling = true;
         mode = Mode.NATIVE;
         observe(toolbar);
     }
@@ -320,6 +321,7 @@ final class InlineController {
         } else if (inputArea.getChildAt(inputArea.getChildCount() - 1) != strip) {
             strip.bringToFront();
         }
+        strip.matchSibling = false;
         mode = Mode.OVERLAY;
         observe(inputArea);
         updateOverlayPosition(inputArea);
@@ -430,7 +432,7 @@ final class InlineController {
     private void createStrip() {
         int pad = InlineStyles.dp(ims, 4);
 
-        strip = new LinearLayout(ims);
+        strip = new StripLayout(ims);
         strip.setOrientation(LinearLayout.HORIZONTAL);
         strip.setGravity(Gravity.CENTER_VERTICAL);
         strip.setPadding(pad, 0, 0, 0);
@@ -480,6 +482,43 @@ final class InlineController {
         return d;
     }
 
+    /**
+     * 建议栏容器。原生模式下它和搜狗候选区一起放在 Toolbar（wrap_content 的 FrameLayout）里，
+     * 必须保证它<b>永远不会撑大 Toolbar</b>：测量时直接采用候选区（Toolbar 里的另一个子 View）的尺寸。
+     * 否则子 View 在 AT_MOST 下可能占满可用高度，Toolbar 随之变成整个键盘窗口那么高，键盘被挤出屏幕。
+     */
+    private static final class StripLayout extends LinearLayout {
+        boolean matchSibling;
+
+        StripLayout(Context ctx) {
+            super(ctx);
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            if (matchSibling && getParent() instanceof ViewGroup) {
+                ViewGroup parent = (ViewGroup) getParent();
+                View ref = null;
+                for (int i = 0; i < parent.getChildCount(); i++) {
+                    View c = parent.getChildAt(i);
+                    if (c != this && c.getVisibility() != View.GONE) {
+                        ref = c;
+                        break;
+                    }
+                }
+                if (ref != null && ref.getMeasuredHeight() > 0) {
+                    widthSpec = MeasureSpec.makeMeasureSpec(ref.getMeasuredWidth(), MeasureSpec.EXACTLY);
+                    heightSpec = MeasureSpec.makeMeasureSpec(ref.getMeasuredHeight(), MeasureSpec.EXACTLY);
+                } else {
+                    // 候选区还没测量：给一个保守的固定高度
+                    int h = InlineStyles.dp(getContext(), DEFAULT_CHIP_HEIGHT_DP);
+                    heightSpec = MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY);
+                }
+            }
+            super.onMeasure(widthSpec, heightSpec);
+        }
+    }
+
     /** 搜狗风格的细线 ×。 */
     private static final class CloseButton extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -497,6 +536,13 @@ final class InlineController {
         void setColor(int color) {
             paint.setColor(color);
             invalidate();
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            // 自定义 View 默认在 AT_MOST 下会占满全部可用空间，必须给出自己的尺寸
+            int size = InlineStyles.dp(getContext(), DEFAULT_CHIP_HEIGHT_DP);
+            setMeasuredDimension(resolveSize(size, widthSpec), resolveSize(size, heightSpec));
         }
 
         @Override
