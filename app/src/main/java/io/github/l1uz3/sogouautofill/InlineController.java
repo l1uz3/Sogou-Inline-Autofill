@@ -55,7 +55,6 @@ final class InlineController {
     private LinearLayout scrollContainer;
     private HorizontalScrollView scrollView;
     private CloseButton closeButton;
-    private View closeDivider;
 
     private Mode mode = Mode.NONE;
     private WeakReference<ViewGroup> toolbarRef = new WeakReference<>(null);
@@ -116,7 +115,8 @@ final class InlineController {
             Bundle style = InlineStyles.build(ims, palette);
             int screenW = ims.getResources().getDisplayMetrics().widthPixels;
             Size min = new Size(InlineStyles.dp(ims, 40), chipHeightPx);
-            Size max = new Size(Math.max(min.getWidth(), screenW * 2 / 3), chipHeightPx);
+            // 最大宽度给到“整条减去 × 按钮”，避免用户名被截断
+            Size max = new Size(Math.max(min.getWidth(), screenW - InlineStyles.dp(ims, 64)), chipHeightPx);
             InlinePresentationSpec spec = new InlinePresentationSpec.Builder(min, max)
                     .setStyle(style)
                     .build();
@@ -344,15 +344,12 @@ final class InlineController {
         if (mode == Mode.NATIVE) {
             strip.setBackground(null); // 透出搜狗皮肤
             closeButton.setColor(p.title);
-            closeDivider.setBackgroundColor(p.dividerColor());
-            closeDivider.setVisibility(View.VISIBLE);
             if (pinnedContainer.getChildCount() > 0 && scrollContainer.getChildCount() > 0) {
                 pinnedContainer.addView(newDivider());
             }
         } else {
             strip.setBackgroundColor(InlineStyles.isNight(ims) ? 0xFF202124 : 0xFFF1F3F4);
             closeButton.setColor(p.subtitle);
-            closeDivider.setVisibility(View.GONE);
         }
     }
 
@@ -458,9 +455,8 @@ final class InlineController {
         strip.addView(scrollView, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
-        // × ：在当前输入框内关闭建议，恢复搜狗原本的工具栏。样式模仿搜狗剪贴板栏右侧的细线 ×
-        closeDivider = newDivider();
-        strip.addView(closeDivider);
+        // × ：在当前输入框内关闭建议，恢复搜狗原本的工具栏。
+        // 样式模仿搜狗剪贴板栏右侧的细线 ×（搜狗在 × 前不加分隔线）
         closeButton = new CloseButton(ims);
         closeButton.setContentDescription("关闭自动填充建议");
         closeButton.setOnClickListener(v -> {

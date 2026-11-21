@@ -1,5 +1,7 @@
 package io.github.l1uz3.sogouautofill;
 
+import android.app.slice.Slice;
+import android.service.autofill.InlinePresentation;
 import android.view.inputmethod.InputMethodInfo;
 
 import de.robv.android.xposed.XC_MethodHook;
@@ -23,6 +25,8 @@ import de.robv.android.xposed.XposedHelpers;
  */
 final class SystemHooks {
     private static final String FIELD = "mInlineSuggestionsEnabled";
+    /** 内联建议里用户名（副标题）和条目名（标题）对调，用户名显示在前。对所有输入法生效。 */
+    static final boolean SWAP_TITLE_AND_SUBTITLE = true;
 
     private SystemHooks() {}
 
@@ -37,6 +41,26 @@ final class SystemHooks {
             L.i("system_server: hooked InputMethodInfo constructors");
         } catch (Throwable t) {
             L.e("system_server: failed to hook InputMethodInfo constructors", t);
+        }
+
+        // 用户名优先：自动填充服务返回的 InlinePresentation 在 system_server 里反序列化后、
+        // 交给渲染服务之前，把 Slice 里的标题/副标题对调（见 SliceSwap）
+        if (SWAP_TITLE_AND_SUBTITLE) {
+            try {
+                XposedBridge.hookAllConstructors(InlinePresentation.class, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        Slice original = (Slice) XposedHelpers.getObjectField(param.thisObject, "mSlice");
+                        Slice swapped = SliceSwap.swapTitleAndSubtitle(original);
+                        if (swapped != original) {
+                            XposedHelpers.setObjectField(param.thisObject, "mSlice", swapped);
+                        }
+                    }
+                });
+                L.i("system_server: hooked InlinePresentation (username first)");
+            } catch (Throwable t) {
+                L.e("system_server: failed to hook InlinePresentation", t);
+            }
         }
 
         try {
