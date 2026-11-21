@@ -5,8 +5,8 @@ import de.robv.android.xposed.XposedBridge;
 /** 日志统一输出到 LSPosed 日志，方便在管理器里查看。 */
 final class L {
     private static final String TAG = "[SogouInlineAutofill] ";
-    /** 调试时改为 true 可以看到更详细的流程日志。 */
-    static final boolean VERBOSE = true;
+    /** 调试时改为 true 可以看到更详细的流程日志（建议、尺寸、对齐等）。 */
+    static final boolean VERBOSE = false;
 
     private L() {}
 

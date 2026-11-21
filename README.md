@@ -47,9 +47,19 @@ Android 11 引入了内联自动填充：自动填充服务（Bitwarden）把建
 4. Bitwarden：设置 → 自动填充 → 打开“自动填充服务”，并打开 **“使用内联自动填充”**。
 5. 打开任意 App 的登录框，用搜狗输入，键盘上方应出现 Bitwarden 的账号建议。
 
-## 构建
+## 下载
 
-推送到 GitHub 后 Actions 会自动构建，产物在 workflow 的 Artifacts 里。本地构建：
+在 [Releases](../../releases) 下载 `SogouInlineAutofill-vX.Y.Z.apk`。
+
+## 构建与发版
+
+推送到 GitHub 后 Actions 会自动构建，产物在 workflow 的 Artifacts 里。推送 `v*` 标签（如 `v1.0.0`）会自动创建 Release 并附上 APK，
+说明文字取自 `RELEASE_NOTES.md`。
+
+release 包默认使用 debug 签名。想让以后的版本能直接覆盖安装，可以在仓库 Settings → Secrets and variables → Actions 里配置
+`SIGNING_KEYSTORE_BASE64`（`base64 -w0 release.jks` 的结果）、`SIGNING_STORE_PASSWORD`、`SIGNING_KEY_ALIAS`、`SIGNING_KEY_PASSWORD`。
+
+本地构建：
 
 ```bash
 ./gradlew assembleDebug   # 需要 Android SDK (compileSdk 35) 和 JDK 17+
@@ -57,7 +67,7 @@ Android 11 引入了内联自动填充：自动填充服务（Bitwarden）把建
 
 ## 排查
 
-LSPosed 管理器 → 日志，搜索 `[SogouInlineAutofill]`：
+LSPosed 管理器 → 日志，搜索 `[SogouInlineAutofill]`（更详细的日志需要把 `L.VERBOSE` 改为 true 后重新构建）：
 
 | 日志 | 说明 |
 | --- | --- |

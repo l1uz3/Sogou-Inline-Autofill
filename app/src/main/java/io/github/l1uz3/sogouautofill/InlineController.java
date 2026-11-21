@@ -129,7 +129,7 @@ final class InlineController {
                     .setMaxSuggestionCount(MAX_SUGGESTIONS)
                     .setSupportedLocales(LocaleList.getDefault())
                     .build();
-            L.d("ime: onCreateInlineSuggestionsRequest -> " + request);
+            L.i("ime: onCreateInlineSuggestionsRequest -> " + request);
             return request;
         } catch (Throwable t) {
             L.e("ime: failed to build InlineSuggestionsRequest", t);
@@ -141,7 +141,7 @@ final class InlineController {
 
     void onResponse(InlineSuggestionsResponse response) {
         final List<InlineSuggestion> list = response.getInlineSuggestions();
-        L.d("ime: onInlineSuggestionsResponse, count=" + list.size());
+        L.i("ime: onInlineSuggestionsResponse, count=" + list.size());
         final int gen = ++generation;
         if (list.isEmpty()) {
             removeSuggestions();
@@ -336,7 +336,7 @@ final class InlineController {
             detachStrip();
             toolbar.addView(strip, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-            L.d("ime: strip attached inside Sogou Toolbar");
+            L.i("ime: strip attached inside Sogou Toolbar");
         } else if (toolbar.getChildAt(toolbar.getChildCount() - 1) != strip) {
             strip.bringToFront();
         }
@@ -351,7 +351,7 @@ final class InlineController {
             FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                     InlineStyles.dp(ims, OVERLAY_STRIP_HEIGHT_DP), Gravity.TOP);
             inputArea.addView(strip, lp); // 最后添加 = 绘制在最上层
-            L.d("ime: strip attached as overlay of inputArea");
+            L.i("ime: strip attached as overlay of inputArea");
         } else if (inputArea.getChildAt(inputArea.getChildCount() - 1) != strip) {
             strip.bringToFront();
         }

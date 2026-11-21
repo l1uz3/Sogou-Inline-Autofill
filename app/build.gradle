@@ -11,15 +11,29 @@ android {
         // 键盘内联自动填充 (Inline Suggestions) 是 Android 11 (API 30) 引入的
         minSdk 30
         targetSdk 35
-        versionCode 1
-        versionName '0.1.0'
+        versionCode 100
+        versionName '1.0.0'
+    }
+
+    // 发版签名：CI 里配置了 SIGNING_* 环境变量（来自 GitHub Secrets）时使用固定密钥，
+    // 否则退回 debug 签名。固定密钥才能保证以后的版本可以直接覆盖安装。
+    def releaseKeystore = System.getenv('SIGNING_KEYSTORE')
+    signingConfigs {
+        release {
+            if (releaseKeystore) {
+                storeFile file(releaseKeystore)
+                storePassword System.getenv('SIGNING_STORE_PASSWORD')
+                keyAlias System.getenv('SIGNING_KEY_ALIAS')
+                keyPassword System.getenv('SIGNING_KEY_PASSWORD')
+            }
+        }
     }
 
     buildTypes {
         release {
             // Xposed 入口通过 assets/xposed_init 反射加载，不做混淆最省事
             minifyEnabled false
-            signingConfig signingConfigs.debug
+            signingConfig releaseKeystore ? signingConfigs.release : signingConfigs.debug
         }
     }
 
