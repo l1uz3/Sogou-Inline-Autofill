@@ -27,8 +27,9 @@ Android 11 引入了内联自动填充：自动填充服务（Bitwarden）把建
               ├─ NewIMEFunctionCandidateView   空闲时的工具栏图标（组件）
               └─ NewCandidateView              打字时的候选词（组件）
   ```
-  建议栏作为**透明** View 加进 `Toolbar`；有建议时跳过工具栏图标组件的绘制（`N1`/`L0`），皮肤背景照常由搜狗绘制，
-  chip 用半透明底色、并按皮肤亮度选深/浅色文字，看起来就像搜狗自己显示的建议。
+  建议栏作为**透明** View 加进 `Toolbar`；有建议时跳过工具栏图标组件和右侧“∨”按钮组件（`l1`）的绘制（`N1`/`L0`），
+  皮肤背景照常由搜狗绘制。样式模仿搜狗原生的剪贴板栏：chip 完全透明，文字颜色和字号直接读皮肤里候选词的样式
+  （`k.m0("CandidateWordView").x0()`，与剪贴板栏取法相同），图标染成文字色，条目之间用细竖线分隔，右侧是细线 ×。
   搜狗切到候选词（正在打拼音）时，工具栏图标组件会被搜狗隐藏（`Component.x1()` 不再是 VISIBLE），建议自动让位，切回来后恢复。
 - **回退方案**：`x1` / `N1` / `L0` 是混淆名，换搜狗版本可能失效；任何一步找不到时自动退回通用方案——不透明建议栏覆盖在键盘顶部。
 - **不会让页面跳动**：两种方案都在键盘内部显示，不改变键盘高度、不修改 `contentTopInsets`。
@@ -72,7 +73,7 @@ LSPosed 管理器 → 日志，搜索 `[SogouInlineAutofill]`：
 
 - **完全没有 `onCreateInlineSuggestionsRequest`**：确认勾选了“系统框架”并重启；确认 Bitwarden 是当前自动填充服务且开启了内联自动填充。
 - **收到响应但 `count=0`**：Bitwarden 没有匹配的条目，或者它没能识别样式（看 Bitwarden 是否改为弹出下拉框）。
-- **建议文字颜色和皮肤不搭**：颜色是按工具栏平均亮度自动选的（日志 `ime: toolbar WxH light=...`），可以在 `InlineStyles.Palette.translucent()` 里调整。
+- **建议文字颜色/字号和皮肤不搭**：日志 `ime: toolbar WxH skin=color=#... size=...px` 是从皮肤读到的值（读不到时 `skin=null`，退回按亮度选黑/白字），可以在 `InlineStyles.Palette.fromSkin()` 里调整。
 - **建议栏点不动**：搜狗的触摸区域计算比较特殊，可以在 `InlineController.adjustInsets()` 里调整。
 - 部分国产 ROM 精简了系统的 `InlineSuggestionRenderService`（ExtServices），这种情况下系统无法渲染内联建议，与本模块无关。
 - 包名前缀 `com.sohu.inputmethod.sogou` 覆盖了官方版和小米版、vivo 版等渠道包；其他渠道包需在 LSPosed 里手动勾选作用域。

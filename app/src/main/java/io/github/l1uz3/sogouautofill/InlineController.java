@@ -1,5 +1,8 @@
 package io.github.l1uz3.sogouautofill;
 
+import android.content.Context;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.Region;
 import android.inputmethodservice.InputMethodService;
 import android.os.Bundle;
@@ -16,7 +19,6 @@ import android.view.inputmethod.InlineSuggestionsResponse;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
-import android.widget.TextView;
 import android.widget.inline.InlineContentView;
 import android.widget.inline.InlinePresentationSpec;
 
@@ -52,7 +54,8 @@ final class InlineController {
     private LinearLayout pinnedContainer;
     private LinearLayout scrollContainer;
     private HorizontalScrollView scrollView;
-    private TextView closeButton;
+    private CloseButton closeButton;
+    private View closeDivider;
 
     private Mode mode = Mode.NONE;
     private WeakReference<ViewGroup> toolbarRef = new WeakReference<>(null);
@@ -87,16 +90,25 @@ final class InlineController {
             ViewGroup toolbar = SogouNative.ready ? findToolbar() : null;
             chipHeightPx = InlineStyles.dp(ims, DEFAULT_CHIP_HEIGHT_DP);
             if (toolbar != null) {
-                Boolean light = InlineStyles.isLightBackground(toolbar);
-                if (light != null) lastLightBackground = light;
-                boolean useLight = lastLightBackground != null ? lastLightBackground : !InlineStyles.isNight(ims);
-                palette = InlineStyles.Palette.translucent(useLight);
+                // 文字颜色/字号直接取皮肤里候选词的样式（和搜狗剪贴板栏一致）
+                SogouNative.SkinText skin = SogouNative.candidateTextStyle();
+                if (skin != null) {
+                    float scaled = ims.getResources().getDisplayMetrics().scaledDensity;
+                    float sp = skin.sizePx > 0 ? skin.sizePx / scaled : 16;
+                    palette = InlineStyles.Palette.fromSkin(skin.color, Math.max(12, Math.min(26, sp)));
+                } else {
+                    Boolean light = InlineStyles.isLightBackground(toolbar);
+                    if (light != null) lastLightBackground = light;
+                    boolean useLight = lastLightBackground != null ? lastLightBackground : !InlineStyles.isNight(ims);
+                    palette = InlineStyles.Palette.translucent(useLight);
+                }
                 if (toolbar.getHeight() > 0) {
-                    chipHeightPx = clamp(toolbar.getHeight() - InlineStyles.dp(ims, 8),
-                            InlineStyles.dp(ims, 28), InlineStyles.dp(ims, 40));
+                    // chip 背景透明，高度占满工具栏即可，文字会垂直居中
+                    chipHeightPx = clamp(toolbar.getHeight() - InlineStyles.dp(ims, 2),
+                            InlineStyles.dp(ims, 28), InlineStyles.dp(ims, 60));
                 }
                 L.d("ime: toolbar " + toolbar.getWidth() + "x" + toolbar.getHeight()
-                        + " light=" + light + " chipHeight=" + chipHeightPx);
+                        + " skin=" + skin + " titleSp=" + palette.titleSp + " chipHeight=" + chipHeightPx);
             } else {
                 palette = InlineStyles.Palette.opaque(InlineStyles.isNight(ims));
             }
@@ -179,7 +191,10 @@ final class InlineController {
             lp.gravity = Gravity.CENTER_VERTICAL;
             // “固定”条目（例如 Bitwarden 的打开密码库图标）放在左侧不随滚动
             boolean pinned = list.get(i).getInfo().isPinned();
-            (pinned ? pinnedContainer : scrollContainer).addView(v, lp);
+            LinearLayout target = pinned ? pinnedContainer : scrollContainer;
+            // 原生模式下条目之间用细竖线分隔，模仿搜狗剪贴板栏
+            if (mode == Mode.NATIVE && target.getChildCount() > 0) target.addView(newDivider());
+            target.addView(v, lp);
             added++;
         }
 
@@ -328,10 +343,17 @@ final class InlineController {
         InlineStyles.Palette p = palette != null ? palette : InlineStyles.Palette.opaque(InlineStyles.isNight(ims));
         if (mode == Mode.NATIVE) {
             strip.setBackground(null); // 透出搜狗皮肤
+            closeButton.setColor(p.title);
+            closeDivider.setBackgroundColor(p.dividerColor());
+            closeDivider.setVisibility(View.VISIBLE);
+            if (pinnedContainer.getChildCount() > 0 && scrollContainer.getChildCount() > 0) {
+                pinnedContainer.addView(newDivider());
+            }
         } else {
             strip.setBackgroundColor(InlineStyles.isNight(ims) ? 0xFF202124 : 0xFFF1F3F4);
+            closeButton.setColor(p.subtitle);
+            closeDivider.setVisibility(View.GONE);
         }
-        closeButton.setTextColor(p.subtitle);
     }
 
     private ViewGroup findToolbar() {
@@ -436,18 +458,57 @@ final class InlineController {
         strip.addView(scrollView, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
-        // × ：在当前输入框内关闭建议，恢复搜狗原本的工具栏
-        closeButton = new TextView(ims);
-        closeButton.setText("✕");
-        closeButton.setTextSize(15);
-        closeButton.setGravity(Gravity.CENTER);
+        // × ：在当前输入框内关闭建议，恢复搜狗原本的工具栏。样式模仿搜狗剪贴板栏右侧的细线 ×
+        closeDivider = newDivider();
+        strip.addView(closeDivider);
+        closeButton = new CloseButton(ims);
         closeButton.setContentDescription("关闭自动填充建议");
         closeButton.setOnClickListener(v -> {
             dismissed = true;
             sync();
         });
         strip.addView(closeButton, new LinearLayout.LayoutParams(
-                InlineStyles.dp(ims, 40), ViewGroup.LayoutParams.MATCH_PARENT));
+                InlineStyles.dp(ims, 48), ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    /** 细竖线分隔符：高度约为建议栏的 40%。 */
+    private View newDivider() {
+        View d = new View(ims);
+        InlineStyles.Palette p = palette != null ? palette : InlineStyles.Palette.opaque(InlineStyles.isNight(ims));
+        d.setBackgroundColor(p.dividerColor());
+        int h = Math.round((chipHeightPx > 0 ? chipHeightPx : InlineStyles.dp(ims, DEFAULT_CHIP_HEIGHT_DP)) * 0.4f);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(Math.max(1, InlineStyles.dp(ims, 1) * 3 / 4), h);
+        lp.gravity = Gravity.CENTER_VERTICAL;
+        lp.setMargins(InlineStyles.dp(ims, 2), 0, InlineStyles.dp(ims, 2), 0);
+        d.setLayoutParams(lp);
+        return d;
+    }
+
+    /** 搜狗风格的细线 ×。 */
+    private static final class CloseButton extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final float half;
+
+        CloseButton(Context ctx) {
+            super(ctx);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeWidth(InlineStyles.dp(ctx, 1.6f));
+            half = InlineStyles.dp(ctx, 7.5f);
+            setClickable(true);
+        }
+
+        void setColor(int color) {
+            paint.setColor(color);
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            float cx = getWidth() / 2f, cy = getHeight() / 2f;
+            canvas.drawLine(cx - half, cy - half, cx + half, cy + half, paint);
+            canvas.drawLine(cx - half, cy + half, cx + half, cy - half, paint);
+        }
     }
 
     private static int clamp(int v, int lo, int hi) {

@@ -1,6 +1,7 @@
 package io.github.l1uz3.sogouautofill;
 
 import android.content.Context;
+import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -28,34 +29,62 @@ import androidx.autofill.inline.v1.InlineSuggestionUi;
 final class InlineStyles {
     private InlineStyles() {}
 
-    /** chip 配色。 */
+    /** chip 配色和字号。 */
     static final class Palette {
         final int chipBackground;
         final int title;
         final int subtitle;
-        /** 背景是否偏亮（决定文字用深色还是浅色）。 */
+        /** 图标着色，0 表示不着色（保留自动填充服务原本的图标颜色）。 */
+        final int iconTint;
+        final float titleSp;
+        final float subtitleSp;
+        /** 背景是否偏亮（文字是深色）。 */
         final boolean lightBackground;
 
-        Palette(int chipBackground, int title, int subtitle, boolean lightBackground) {
+        Palette(int chipBackground, int title, int subtitle, int iconTint,
+                float titleSp, float subtitleSp, boolean lightBackground) {
             this.chipBackground = chipBackground;
             this.title = title;
             this.subtitle = subtitle;
+            this.iconTint = iconTint;
+            this.titleSp = titleSp;
+            this.subtitleSp = subtitleSp;
             this.lightBackground = lightBackground;
         }
 
-        /** 半透明配色：适合直接叠在搜狗皮肤上。 */
+        /**
+         * 原生配色：完全透明的 chip，文字/图标使用皮肤里候选词的颜色和字号，
+         * 和搜狗剪贴板栏等原生内容一致。
+         */
+        static Palette fromSkin(int textColor, float titleSp) {
+            int alpha = Color.alpha(textColor) == 0 ? 0xFF : Color.alpha(textColor);
+            int opaque = (textColor & 0x00FFFFFF) | (alpha << 24);
+            int sub = (opaque & 0x00FFFFFF) | (Math.round(alpha * 0.7f) << 24);
+            return new Palette(Color.TRANSPARENT, opaque, sub, opaque, titleSp, titleSp * 0.8f,
+                    luminance(opaque) < 0.5);
+        }
+
+        /** 读不到皮肤样式时：透明 chip，按工具栏亮度选黑/白字。 */
         static Palette translucent(boolean lightBackground) {
-            return lightBackground
-                    ? new Palette(0x1A000000, 0xE6000000, 0x99000000, true)
-                    : new Palette(0x26FFFFFF, 0xF2FFFFFF, 0xB3FFFFFF, false);
+            int text = lightBackground ? 0xE6000000 : 0xF2FFFFFF;
+            return fromSkin(text, 16);
         }
 
         /** 不透明配色：通用覆盖层（回退方案）使用。 */
         static Palette opaque(boolean night) {
             return night
-                    ? new Palette(0xFF3C4043, 0xFFE8EAED, 0xFFBDC1C6, false)
-                    : new Palette(0xFFFFFFFF, 0xFF202124, 0xFF5F6368, true);
+                    ? new Palette(0xFF3C4043, 0xFFE8EAED, 0xFFBDC1C6, 0, 14, 12, false)
+                    : new Palette(0xFFFFFFFF, 0xFF202124, 0xFF5F6368, 0, 14, 12, true);
         }
+
+        /** 分隔线颜色（模仿搜狗剪贴板栏里的竖线）。 */
+        int dividerColor() {
+            return (title & 0x00FFFFFF) | (Math.round(Color.alpha(title) * 0.35f) << 24);
+        }
+    }
+
+    static double luminance(int color) {
+        return (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)) / 255.0;
     }
 
     static boolean isNight(Context ctx) {
@@ -108,26 +137,31 @@ final class InlineStyles {
                 .setPadding(dp(ctx, 10), 0, dp(ctx, 10), 0)
                 .build();
 
-        ImageViewStyle startIcon = new ImageViewStyle.Builder()
-                .setMaxWidth(dp(ctx, 20))
-                .setMaxHeight(dp(ctx, 20))
-                .setLayoutMargin(0, 0, dp(ctx, 6), 0)
-                .build();
-
-        ImageViewStyle singleIcon = new ImageViewStyle.Builder()
-                .setMaxWidth(dp(ctx, 22))
-                .setMaxHeight(dp(ctx, 22))
-                .build();
+        int iconSize = dp(ctx, Math.max(18, Math.min(26, p.titleSp * 1.2f)));
+        ImageViewStyle.Builder startIconB = new ImageViewStyle.Builder()
+                .setMaxWidth(iconSize)
+                .setMaxHeight(iconSize)
+                .setLayoutMargin(0, 0, dp(ctx, 8), 0);
+        ImageViewStyle.Builder singleIconB = new ImageViewStyle.Builder()
+                .setMaxWidth(iconSize)
+                .setMaxHeight(iconSize);
+        if (p.iconTint != 0) {
+            // 例如把 Bitwarden 的灰色地球图标染成皮肤文字色，和搜狗的线条图标一致
+            startIconB.setTintList(ColorStateList.valueOf(p.iconTint));
+            singleIconB.setTintList(ColorStateList.valueOf(p.iconTint));
+        }
+        ImageViewStyle startIcon = startIconB.build();
+        ImageViewStyle singleIcon = singleIconB.build();
 
         TextViewStyle title = new TextViewStyle.Builder()
                 .setTextColor(p.title)
-                .setTextSize(14)
-                .setLayoutMargin(0, 0, dp(ctx, 4), 0)
+                .setTextSize(p.titleSp)
+                .setLayoutMargin(0, 0, dp(ctx, 6), 0)
                 .build();
 
         TextViewStyle subtitle = new TextViewStyle.Builder()
                 .setTextColor(p.subtitle)
-                .setTextSize(12)
+                .setTextSize(p.subtitleSp)
                 .build();
 
         InlineSuggestionUi.Style style = InlineSuggestionUi.newStyleBuilder()

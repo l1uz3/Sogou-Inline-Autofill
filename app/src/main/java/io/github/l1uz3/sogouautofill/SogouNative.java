@@ -39,9 +39,20 @@ final class SogouNative {
     private static final String DRAW_CONTENT = "N1";     // Component.N1(Canvas) (onDraw)
     private static final String DRAW_CHILDREN = "L0";    // Component.L0(Canvas) (dispatchDraw)
 
+    /** 工具栏右侧按钮组件：平时画“∨”（收起键盘），剪贴板栏出现时画“×”。显示建议时一并隐藏，由我们自己画 ×。 */
+    private static final String RIGHT_BUTTON_CLASS = "com.sohu.inputmethod.sogou.l1";
+
+    /** 皮肤里候选词的文字样式：k.m0("CandidateWordView").x0() → style.j0() 颜色 / style.p0() 字号。 */
+    private static final String THEME_VIEW_CLASS = "com.sogou.theme.data.view.k";
+    private static final String CANDIDATE_WORD_VIEW = "CandidateWordView";
+    /** 键盘缩放：resize.b.a.a().I(size) 把皮肤字号换算成实际像素（与搜狗剪贴板栏一致）。 */
+    private static final String RESIZE_CLASS = "com.sogou.imskit.core.ui.keyboard.resize.b";
+
     static volatile boolean ready;
     static Class<?> toolbarClass;
+    private static ClassLoader classLoader;
     private static Class<?> functionClass;
+    private static Class<?> rightButtonClass;
     private static Method getVisibility;
     private static volatile WeakReference<Object> functionView = new WeakReference<>(null);
     /** 为 true 时不绘制工具栏图标组件。 */
@@ -52,6 +63,7 @@ final class SogouNative {
     private SogouNative() {}
 
     static void install(ClassLoader cl) {
+        classLoader = cl;
         try {
             toolbarClass = XposedHelpers.findClass(TOOLBAR_CLASS, cl);
             functionClass = XposedHelpers.findClass(FUNCTION_VIEW_CLASS, cl);
@@ -71,7 +83,7 @@ final class SogouNative {
             XC_MethodHook skipDraw = new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
-                    if (suppressFunctionDraw && functionClass.isInstance(param.thisObject)) {
+                    if (suppressFunctionDraw && isSuppressed(param.thisObject)) {
                         param.setResult(null);
                     }
                 }
@@ -79,6 +91,16 @@ final class SogouNative {
             boolean a = ImeHooks.hookEffective(functionClass, DRAW_CONTENT, new Class<?>[]{Canvas.class}, skipDraw);
             boolean b = ImeHooks.hookEffective(functionClass, DRAW_CHILDREN, new Class<?>[]{Canvas.class}, skipDraw);
             if (!a || !b) throw new NoSuchMethodException("draw methods not found");
+
+            // 右侧按钮是可选的：找不到只是会残留一个“∨”，不影响其他功能
+            try {
+                rightButtonClass = XposedHelpers.findClass(RIGHT_BUTTON_CLASS, cl);
+                ImeHooks.hookEffective(rightButtonClass, DRAW_CONTENT, new Class<?>[]{Canvas.class}, skipDraw);
+                ImeHooks.hookEffective(rightButtonClass, DRAW_CHILDREN, new Class<?>[]{Canvas.class}, skipDraw);
+            } catch (Throwable t) {
+                rightButtonClass = null;
+                L.e("ime: right toolbar button not found", t);
+            }
 
             // Toolbar.setCandidatesView 会 removeAllViews()，建议栏要重新挂上
             XposedHelpers.findAndHookMethod(toolbarClass, "setCandidatesView", View.class, new XC_MethodHook() {
@@ -99,6 +121,53 @@ final class SogouNative {
         } catch (Throwable t) {
             ready = false;
             L.e("ime: native Sogou toolbar integration unavailable, falling back to overlay", t);
+        }
+    }
+
+    private static boolean isSuppressed(Object component) {
+        return functionClass.isInstance(component)
+                || (rightButtonClass != null && rightButtonClass.isInstance(component));
+    }
+
+    /** 皮肤里候选词的文字样式。 */
+    static final class SkinText {
+        final int color;
+        final int sizePx;
+
+        SkinText(int color, int sizePx) {
+            this.color = color;
+            this.sizePx = sizePx;
+        }
+
+        @Override
+        public String toString() {
+            return String.format("color=#%08X size=%dpx", color, sizePx);
+        }
+    }
+
+    /** 读取当前皮肤的候选词颜色和字号（与搜狗剪贴板栏的取法一致）。失败返回 null。 */
+    static SkinText candidateTextStyle() {
+        if (classLoader == null) return null;
+        try {
+            Class<?> themeView = XposedHelpers.findClass(THEME_VIEW_CLASS, classLoader);
+            Object view = themeView.getMethod("m0", String.class).invoke(null, CANDIDATE_WORD_VIEW);
+            if (view == null) return null;
+            Object style = view.getClass().getMethod("x0").invoke(view);
+            if (style == null) return null;
+            int color = (Integer) style.getClass().getMethod("j0").invoke(style);
+            int size = (Integer) style.getClass().getMethod("p0").invoke(style);
+            try {
+                Class<?> resize = XposedHelpers.findClass(RESIZE_CLASS, classLoader);
+                Object inst = resize.getField("a").get(null);
+                Object data = resize.getMethod("a").invoke(inst);
+                size = (Integer) data.getClass().getMethod("I", int.class).invoke(data, size);
+            } catch (Throwable t) {
+                L.e("ime: cannot scale skin text size, using raw value", t);
+            }
+            return new SkinText(color, size);
+        } catch (Throwable t) {
+            L.e("ime: cannot read skin candidate text style", t);
+            return null;
         }
     }
 
