@@ -4,6 +4,9 @@ on:
   push:
     branches: ['**']
     tags: ['v*']
+  # 在 GitHub 网页上发布 Release（新建 v* 标签）时也会构建并把 APK 附加到该 Release
+  release:
+    types: [published]
   pull_request:
   workflow_dispatch:
 

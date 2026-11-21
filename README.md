@@ -53,8 +53,8 @@ Android 11 引入了内联自动填充：自动填充服务（Bitwarden）把建
 
 ## 构建与发版
 
-推送到 GitHub 后 Actions 会自动构建，产物在 workflow 的 Artifacts 里。推送 `v*` 标签（如 `v1.0.0`）会自动创建 Release 并附上 APK，
-说明文字取自 `RELEASE_NOTES.md`。
+推送到 GitHub 后 Actions 会自动构建，产物在 workflow 的 Artifacts 里。推送 `v*` 标签（如 `v1.0.0`），或在网页上发布一个 `v*` 标签的 Release，
+都会自动构建并把 APK 附加到 Release 上（推送标签时说明文字取自 `RELEASE_NOTES.md`）。
 
 release 包默认使用 debug 签名。想让以后的版本能直接覆盖安装，可以在仓库 Settings → Secrets and variables → Actions 里配置
 `SIGNING_KEYSTORE_BASE64`（`base64 -w0 release.jks` 的结果）、`SIGNING_STORE_PASSWORD`、`SIGNING_KEY_ALIAS`、`SIGNING_KEY_PASSWORD`。
