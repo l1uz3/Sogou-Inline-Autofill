@@ -38,6 +38,7 @@ final class SogouNative {
     private static final String GET_VISIBILITY = "x1";   // Component.x1(): int  (visibility)
     private static final String DRAW_CONTENT = "N1";     // Component.N1(Canvas) (onDraw)
     private static final String DRAW_CHILDREN = "L0";    // Component.L0(Canvas) (dispatchDraw)
+    private static final String DRAW_BACKGROUND = "S0";  // Component.S0(Canvas) (drawBackground)
 
     /** 工具栏右侧按钮组件：平时画“∨”（收起键盘），剪贴板栏出现时画“×”。显示建议时一并隐藏，由我们自己画 ×。 */
     private static final String RIGHT_BUTTON_CLASS = "com.sohu.inputmethod.sogou.l1";
@@ -97,6 +98,8 @@ final class SogouNative {
                 rightButtonClass = XposedHelpers.findClass(RIGHT_BUTTON_CLASS, cl);
                 ImeHooks.hookEffective(rightButtonClass, DRAW_CONTENT, new Class<?>[]{Canvas.class}, skipDraw);
                 ImeHooks.hookEffective(rightButtonClass, DRAW_CHILDREN, new Class<?>[]{Canvas.class}, skipDraw);
+                // 它的背景（皮肤里“∨”键左侧的分隔竖线）也不画，否则会在建议栏右侧残留一条白线
+                ImeHooks.hookEffective(rightButtonClass, DRAW_BACKGROUND, new Class<?>[]{Canvas.class}, skipDraw);
             } catch (Throwable t) {
                 rightButtonClass = null;
                 L.e("ime: right toolbar button not found", t);

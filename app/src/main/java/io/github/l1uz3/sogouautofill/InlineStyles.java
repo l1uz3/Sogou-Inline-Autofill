@@ -138,19 +138,21 @@ final class InlineStyles {
                 .build();
 
         int iconSize = dp(ctx, Math.max(18, Math.min(26, p.titleSp * 1.2f)));
-        ImageViewStyle.Builder startIconB = new ImageViewStyle.Builder()
-                .setMaxWidth(iconSize)
-                .setMaxHeight(iconSize)
-                .setLayoutMargin(0, 0, dp(ctx, 8), 0);
+        // 文字前的图标（Bitwarden 的地球图标）不显示：最大尺寸 0、无边距、透明着色
+        ImageViewStyle startIcon = new ImageViewStyle.Builder()
+                .setMaxWidth(0)
+                .setMaxHeight(0)
+                .setLayoutMargin(0, 0, 0, 0)
+                .setPadding(0, 0, 0, 0)
+                .setTintList(ColorStateList.valueOf(Color.TRANSPARENT))
+                .build();
+        // 只有图标的条目（例如 Bitwarden 的“打开密码库”）保留图标
         ImageViewStyle.Builder singleIconB = new ImageViewStyle.Builder()
                 .setMaxWidth(iconSize)
                 .setMaxHeight(iconSize);
         if (p.iconTint != 0) {
-            // 例如把 Bitwarden 的灰色地球图标染成皮肤文字色，和搜狗的线条图标一致
-            startIconB.setTintList(ColorStateList.valueOf(p.iconTint));
             singleIconB.setTintList(ColorStateList.valueOf(p.iconTint));
         }
-        ImageViewStyle startIcon = startIconB.build();
         ImageViewStyle singleIcon = singleIconB.build();
 
         TextViewStyle title = new TextViewStyle.Builder()
