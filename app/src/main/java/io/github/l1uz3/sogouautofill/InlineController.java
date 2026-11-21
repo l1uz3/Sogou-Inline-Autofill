@@ -272,6 +272,7 @@ final class InlineController {
             strip.setVisibility(v);
             changed = true;
         }
+        if (want && mode == Mode.NATIVE && alignToSogouButton()) changed = true;
         boolean suppress = want && mode == Mode.NATIVE;
         if (SogouNative.suppressFunctionDraw != suppress) {
             SogouNative.suppressFunctionDraw = suppress;
@@ -279,6 +280,36 @@ final class InlineController {
             changed = true;
         }
         return changed;
+    }
+
+    /**
+     * 让建议栏和搜狗工具栏的分区对齐：滚动区到皮肤里的分隔白线为止（= 搜狗右侧“∨”按钮的左边），
+     * × 正好占据“∨”按钮的位置。返回是否改动了布局。
+     */
+    private boolean alignToSogouButton() {
+        if (strip.getWidth() <= 0) return false;
+        int target = InlineStyles.dp(ims, 48);
+        int[] bounds = SogouNative.rightButtonBoundsInWindow();
+        if (bounds != null) {
+            int[] loc = new int[2];
+            strip.getLocationInWindow(loc);
+            int left = bounds[0] - loc[0];
+            int right = Math.min(bounds[1] - loc[0], strip.getWidth());
+            if (left > strip.getWidth() / 2 && right > left) target = right - left;
+        }
+        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) closeButton.getLayoutParams();
+        int marginRight = 0;
+        if (bounds != null) {
+            int[] loc = new int[2];
+            strip.getLocationInWindow(loc);
+            marginRight = Math.max(0, strip.getWidth() - (bounds[1] - loc[0]));
+        }
+        if (lp.width == target && lp.rightMargin == marginRight) return false;
+        lp.width = target;
+        lp.rightMargin = marginRight;
+        closeButton.setLayoutParams(lp);
+        L.d("ime: close button aligned to Sogou button, width=" + target + " marginRight=" + marginRight);
+        return true;
     }
 
     // ---------------------------------------------------------------- view

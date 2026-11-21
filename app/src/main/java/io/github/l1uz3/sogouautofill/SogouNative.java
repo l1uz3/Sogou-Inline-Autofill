@@ -38,7 +38,14 @@ final class SogouNative {
     private static final String GET_VISIBILITY = "x1";   // Component.x1(): int  (visibility)
     private static final String DRAW_CONTENT = "N1";     // Component.N1(Canvas) (onDraw)
     private static final String DRAW_CHILDREN = "L0";    // Component.L0(Canvas) (dispatchDraw)
-    private static final String DRAW_BACKGROUND = "S0";  // Component.S0(Canvas) (drawBackground)
+    private static final String COMPONENT_CLASS = "com.sogou.imskit.core.ui.virtualwidget.component.Component";
+    // Component 的位置相关方法（混淆名）：g1()=left（相对父组件）, y1()=width, r1()=父组件, t1()=scrollX,
+    // X0()=承载组件的 RootComponentView（真正的 Android View）
+    private static final String GET_LEFT = "g1";
+    private static final String GET_WIDTH = "y1";
+    private static final String GET_PARENT = "r1";
+    private static final String GET_SCROLL_X = "t1";
+    private static final String GET_ROOT_VIEW = "X0";
 
     /** 工具栏右侧按钮组件：平时画“∨”（收起键盘），剪贴板栏出现时画“×”。显示建议时一并隐藏，由我们自己画 ×。 */
     private static final String RIGHT_BUTTON_CLASS = "com.sohu.inputmethod.sogou.l1";
@@ -56,6 +63,9 @@ final class SogouNative {
     private static Class<?> rightButtonClass;
     private static Method getVisibility;
     private static volatile WeakReference<Object> functionView = new WeakReference<>(null);
+    private static volatile WeakReference<Object> rightButton = new WeakReference<>(null);
+    private static Class<?> componentClass;
+    private static Method[] positionMethods;
     /** 为 true 时不绘制工具栏图标组件。 */
     static volatile boolean suppressFunctionDraw;
     /** 当前的 InlineController（输入法只有一个实例）。 */
@@ -98,8 +108,12 @@ final class SogouNative {
                 rightButtonClass = XposedHelpers.findClass(RIGHT_BUTTON_CLASS, cl);
                 ImeHooks.hookEffective(rightButtonClass, DRAW_CONTENT, new Class<?>[]{Canvas.class}, skipDraw);
                 ImeHooks.hookEffective(rightButtonClass, DRAW_CHILDREN, new Class<?>[]{Canvas.class}, skipDraw);
-                // 它的背景（皮肤里“∨”键左侧的分隔竖线）也不画，否则会在建议栏右侧残留一条白线
-                ImeHooks.hookEffective(rightButtonClass, DRAW_BACKGROUND, new Class<?>[]{Canvas.class}, skipDraw);
+                XposedBridge.hookAllConstructors(rightButtonClass, new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        rightButton = new WeakReference<>(param.thisObject);
+                    }
+                });
             } catch (Throwable t) {
                 rightButtonClass = null;
                 L.e("ime: right toolbar button not found", t);
@@ -130,6 +144,51 @@ final class SogouNative {
     private static boolean isSuppressed(Object component) {
         return functionClass.isInstance(component)
                 || (rightButtonClass != null && rightButtonClass.isInstance(component));
+    }
+
+    /**
+     * 搜狗工具栏右侧按钮（“∨”）在窗口中的水平范围 [left, right]。皮肤背景里的分隔白线就在它的左边，
+     * 搜狗的候选区到这条线为止。拿不到时返回 null。
+     */
+    static int[] rightButtonBoundsInWindow() {
+        Object btn = rightButton.get();
+        if (btn == null || classLoader == null) return null;
+        try {
+            if (positionMethods == null) {
+                Class<?> cls = XposedHelpers.findClass(COMPONENT_CLASS, classLoader);
+                Method root = cls.getDeclaredMethod(GET_ROOT_VIEW);
+                root.setAccessible(true);
+                componentClass = cls;
+                positionMethods = new Method[]{cls.getMethod(GET_LEFT), cls.getMethod(GET_WIDTH),
+                        cls.getMethod(GET_PARENT), cls.getMethod(GET_SCROLL_X), root};
+            }
+            Class<?> component = componentClass;
+            Method getLeft = positionMethods[0];
+            Method getWidth = positionMethods[1];
+            Method getParent = positionMethods[2];
+            Method getScrollX = positionMethods[3];
+            Method getRoot = positionMethods[4];
+
+            int width = (Integer) getWidth.invoke(btn);
+            if (width <= 0) return null;
+            // 沿父组件链累加得到在 RootComponentView 里的 left
+            int left = 0;
+            Object c = btn;
+            while (component.isInstance(c)) {
+                left += (Integer) getLeft.invoke(c);
+                Object parent = getParent.invoke(c);
+                if (component.isInstance(parent)) left -= (Integer) getScrollX.invoke(parent);
+                c = parent;
+            }
+            Object root = getRoot.invoke(btn);
+            if (!(root instanceof View) || !((View) root).isAttachedToWindow()) return null;
+            int[] loc = new int[2];
+            ((View) root).getLocationInWindow(loc);
+            return new int[]{loc[0] + left, loc[0] + left + width};
+        } catch (Throwable t) {
+            L.e("ime: cannot locate right toolbar button", t);
+            return null;
+        }
     }
 
     /** 皮肤里候选词的文字样式。 */
