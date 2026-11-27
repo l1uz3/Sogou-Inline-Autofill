@@ -77,7 +77,7 @@ final class InlineController {
      * 期满仍没有新建议才真正撤掉、恢复搜狗工具栏。
      */
     private boolean holding;
-    private static final long HOLD_MS = 250;
+    private static final long HOLD_MS = 150;
     /** 等待期内系统又发起了内联请求（新建议马上会到）时，延长到这么久。 */
     private static final long HOLD_WITH_REQUEST_MS = 400;
     private final Runnable endHold = () -> {
