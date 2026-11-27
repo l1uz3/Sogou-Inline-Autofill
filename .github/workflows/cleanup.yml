@@ -1,0 +1,37 @@
+name: Clean up old runs
+
+# 手动运行：删除旧的构建记录，只保留最近几次（默认 3 次）。
+# 已发布 Release 里的 APK 单独存放，不受影响。
+on:
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: 保留最近多少次构建
+        default: '3'
+        required: true
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const keep = Math.max(0, parseInt(context.payload.inputs?.keep ?? '3', 10) || 0);
+            const { owner, repo } = context.repo;
+            const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {
+              owner, repo, per_page: 100,
+            });
+            // 只删已完成的，不碰正在跑的和本次清理自身
+            const done = runs
+              .filter(r => r.status === 'completed' && r.id !== context.runId)
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            const toDelete = done.slice(keep);
+            core.info(`共 ${runs.length} 次构建，保留最近 ${keep} 次，删除 ${toDelete.length} 次`);
+            for (const r of toDelete) {
+              await github.rest.actions.deleteWorkflowRun({ owner, repo, run_id: r.id });
+              core.info(`已删除 #${r.run_number} [${r.event}] ${r.display_title}`);
+            }
