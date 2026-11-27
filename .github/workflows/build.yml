@@ -1,14 +1,22 @@
 name: Build APK
 
+# 每种改动只触发一次构建：
+#  - 合并/推送到 main：push
+#  - PR 分支的推送：pull_request（不再同时触发 push）
+#  - 在网页上发布 Release：release（新建标签不再额外触发一次），构建后把 APK 附加到该 Release
+#  - 手动：workflow_dispatch
 on:
   push:
-    branches: ['**']
-    tags: ['v*']
-  # 在 GitHub 网页上发布 Release（新建 v* 标签）时也会构建并把 APK 附加到该 Release
+    branches: [main]
+  pull_request:
   release:
     types: [published]
-  pull_request:
   workflow_dispatch:
+
+# 同一个分支 / PR 连续推送时，取消还没跑完的旧构建
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
