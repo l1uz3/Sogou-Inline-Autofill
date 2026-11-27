@@ -68,6 +68,17 @@ final class InlineController {
     private boolean composing;
     /** 用户在当前输入框点了 ×。 */
     private boolean dismissed;
+    /**
+     * 换输入框后的等待期：旧建议已撤掉，但建议栏（皮肤背景）继续保留、搜狗工具栏图标继续隐藏，
+     * 等新输入框的建议到来后直接替换。否则在同一页面来回点用户名/密码时，
+     * 每次都会先露出搜狗工具栏图标、几百毫秒后又被新建议盖住，表现为工具栏来回闪烁。
+     */
+    private boolean holding;
+    private static final long HOLD_MS = 500;
+    private final Runnable endHold = () -> {
+        holding = false;
+        sync();
+    };
 
     /** 本次请求使用的配色和 chip 高度。 */
     private InlineStyles.Palette palette;
@@ -144,6 +155,7 @@ final class InlineController {
         L.i("ime: onInlineSuggestionsResponse, count=" + list.size());
         final int gen = ++generation;
         if (list.isEmpty()) {
+            stopHolding();
             removeSuggestions();
             return;
         }
@@ -209,15 +221,35 @@ final class InlineController {
         pinnedContainer.setVisibility(pinnedContainer.getChildCount() > 0 ? View.VISIBLE : View.GONE);
         scrollView.scrollTo(0, 0);
         hasSuggestions = true;
+        stopHolding();
         sync();
     }
 
     /** 切换输入框 / 收起键盘：清空建议并重置“已关闭”状态。 */
     void clear() {
+        clear(false);
+    }
+
+    /**
+     * @param hold 为 true 且当前正在显示建议时进入等待期（见 {@link #holding}），用于切换输入框；
+     *             为 false 时立即恢复搜狗工具栏（例如输入法销毁）。
+     */
+    void clear(boolean hold) {
+        boolean wasShowing = hasSuggestions && strip != null && strip.getVisibility() == View.VISIBLE;
         generation++;
         dismissed = false;
         composing = false;
+        stopHolding();
+        if (hold && wasShowing) {
+            holding = true;
+            strip.postDelayed(endHold, HOLD_MS);
+        }
         removeSuggestions();
+    }
+
+    private void stopHolding() {
+        holding = false;
+        if (strip != null) strip.removeCallbacks(endHold);
     }
 
     private void removeSuggestions() {
@@ -257,7 +289,7 @@ final class InlineController {
      */
     private boolean sync() {
         if (strip == null) return false;
-        boolean want = hasSuggestions && !dismissed && strip.getParent() != null;
+        boolean want = (hasSuggestions || holding) && !dismissed && strip.getParent() != null;
         ViewGroup toolbar = mode == Mode.NATIVE ? toolbarRef.get() : null;
         if (mode == Mode.NATIVE) {
             // 工具栏图标组件不可见 = 搜狗在显示候选词等，让位

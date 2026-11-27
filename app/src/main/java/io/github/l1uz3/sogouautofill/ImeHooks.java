@@ -125,15 +125,21 @@ final class ImeHooks {
         // （表现为有时要点两三次才出现建议）。切换输入框时框架一定会先走
         //   finishViews(): notifyOnFinishInputView() → onFinishInputView()
         // 所以在 onFinishInputView 清理即可。
-        XC_MethodHook clear = new XC_MethodHook() {
+        // 结束输入框时进入短暂等待期，避免来回切换用户名/密码时工具栏闪烁（见 InlineController.holding）
+        hookEffective(cls, "onFinishInputView", new Class<?>[]{boolean.class}, new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
                 InlineController c = controllerOf(param.thisObject);
-                if (c != null) c.clear();
+                if (c != null) c.clear(true);
             }
-        };
-        hookEffective(cls, "onFinishInputView", new Class<?>[]{boolean.class}, clear);
-        hookEffective(cls, "onDestroy", new Class<?>[0], clear);
+        });
+        hookEffective(cls, "onDestroy", new Class<?>[0], new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                InlineController c = controllerOf(param.thisObject);
+                if (c != null) c.clear(false);
+            }
+        });
     }
 
     /**
