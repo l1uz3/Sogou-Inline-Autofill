@@ -7,6 +7,7 @@ import android.graphics.Region;
 import android.inputmethodservice.InputMethodService;
 import android.os.Bundle;
 import android.os.LocaleList;
+import android.os.SystemClock;
 import android.util.Size;
 import android.view.Gravity;
 import android.view.View;
@@ -74,7 +75,15 @@ final class InlineController {
      * 每次都会先露出搜狗工具栏图标、几百毫秒后又被新建议盖住，表现为工具栏来回闪烁。
      */
     private boolean holding;
-    private static final long HOLD_MS = 500;
+    /** 新输入框发起了内联请求（建议马上会到）时，最多等待的时间。 */
+    private static final long HOLD_MAX_MS = 400;
+    /** 键盘界面已经启动却没有内联请求（普通输入框）时，再等这么久就恢复搜狗工具栏（请求偶尔会稍晚到达）。 */
+    private static final long NO_REQUEST_GRACE_MS = 120;
+    /** 上次结束输入框以来，系统是否向输入法发起过内联请求。 */
+    private boolean requestSinceFinish;
+    /** 最近一次内联请求的时间（uptime）。新输入框的请求偶尔会略早于旧输入框的 onFinishInputView 到达。 */
+    private long lastRequestAt;
+    private static final long RECENT_REQUEST_MS = 300;
     private final Runnable endHold = () -> {
         holding = false;
         sync();
@@ -96,6 +105,9 @@ final class InlineController {
     // ---------------------------------------------------------------- request
 
     InlineSuggestionsRequest onCreateRequest(Bundle uiExtras) {
+        requestSinceFinish = true;
+        lastRequestAt = SystemClock.uptimeMillis();
+        if (holding) scheduleEndHold(HOLD_MAX_MS); // 建议马上会到，继续保留建议栏
         try {
             ViewGroup toolbar = SogouNative.ready ? findToolbar() : null;
             chipHeightPx = InlineStyles.dp(ims, DEFAULT_CHIP_HEIGHT_DP);
@@ -239,12 +251,25 @@ final class InlineController {
         generation++;
         dismissed = false;
         composing = false;
+        requestSinceFinish = false;
         stopHolding();
         if (hold && wasShowing) {
             holding = true;
-            strip.postDelayed(endHold, HOLD_MS);
+            scheduleEndHold(HOLD_MAX_MS);
         }
         removeSuggestions();
+    }
+
+    /** 新输入框的键盘界面已启动（onStartInputView 之后）。没有内联请求说明不会有建议，尽快恢复搜狗工具栏。 */
+    void onInputViewStarted() {
+        boolean recent = SystemClock.uptimeMillis() - lastRequestAt < RECENT_REQUEST_MS;
+        if (holding && !requestSinceFinish && !recent) scheduleEndHold(NO_REQUEST_GRACE_MS);
+    }
+
+    private void scheduleEndHold(long delayMs) {
+        if (strip == null) return;
+        strip.removeCallbacks(endHold);
+        strip.postDelayed(endHold, delayMs);
     }
 
     private void stopHolding() {
