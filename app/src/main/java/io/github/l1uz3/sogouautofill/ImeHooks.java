@@ -3,7 +3,6 @@ package io.github.l1uz3.sogouautofill;
 import android.inputmethodservice.InputMethodService;
 import android.os.Bundle;
 import android.view.View;
-import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InlineSuggestionsResponse;
 
 import java.lang.reflect.Method;
@@ -126,20 +125,12 @@ final class ImeHooks {
         // （表现为有时要点两三次才出现建议）。切换输入框时框架一定会先走
         //   finishViews(): notifyOnFinishInputView() → onFinishInputView()
         // 所以在 onFinishInputView 清理即可。
-        // 结束输入框时进入短暂等待期，避免来回切换用户名/密码时工具栏闪烁（见 InlineController.holding）
+        // 结束输入框时先进入等待期（旧建议保持原样），避免来回切换用户名/密码时工具栏闪烁（见 InlineController.holding）
         hookEffective(cls, "onFinishInputView", new Class<?>[]{boolean.class}, new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
                 InlineController c = controllerOf(param.thisObject);
                 if (c != null) c.clear(true);
-            }
-        });
-        // 键盘界面启动后：若这个输入框没有内联请求，提前结束等待期（不清空任何东西）
-        hookEffective(cls, "onStartInputView", new Class<?>[]{EditorInfo.class, boolean.class}, new XC_MethodHook() {
-            @Override
-            protected void afterHookedMethod(MethodHookParam param) {
-                InlineController c = controllerOf(param.thisObject);
-                if (c != null) c.onInputViewStarted();
             }
         });
         hookEffective(cls, "onDestroy", new Class<?>[0], new XC_MethodHook() {

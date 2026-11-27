@@ -7,7 +7,6 @@ import android.graphics.Region;
 import android.inputmethodservice.InputMethodService;
 import android.os.Bundle;
 import android.os.LocaleList;
-import android.os.SystemClock;
 import android.util.Size;
 import android.view.Gravity;
 import android.view.View;
@@ -70,24 +69,27 @@ final class InlineController {
     /** 用户在当前输入框点了 ×。 */
     private boolean dismissed;
     /**
-     * 换输入框后的等待期：旧建议已撤掉，但建议栏（皮肤背景）继续保留、搜狗工具栏图标继续隐藏，
-     * 等新输入框的建议到来后直接替换。否则在同一页面来回点用户名/密码时，
-     * 每次都会先露出搜狗工具栏图标、几百毫秒后又被新建议盖住，表现为工具栏来回闪烁。
+     * 撤建议前的等待期。在同一页面来回点用户名/密码时，系统会先发一个空建议（撤掉旧输入框的建议）、
+     * 旧输入框结束，然后新输入框的建议才到。如果收到空建议或输入框结束就立刻撤掉，
+     * 每次都会先露出搜狗工具栏图标、紧接着又被新建议盖住，表现为工具栏闪烁。
+     *
+     * 所以这两种情况都先<b>保持原样</b>（旧建议留在原位、图标继续隐藏）：等待期内新建议到来就原地替换，
+     * 期满仍没有新建议才真正撤掉、恢复搜狗工具栏。
      */
     private boolean holding;
-    /** 新输入框发起了内联请求（建议马上会到）时，最多等待的时间。 */
-    private static final long HOLD_MAX_MS = 400;
-    /** 键盘界面已经启动却没有内联请求（普通输入框）时，再等这么久就恢复搜狗工具栏（请求偶尔会稍晚到达）。 */
-    private static final long NO_REQUEST_GRACE_MS = 120;
-    /** 上次结束输入框以来，系统是否向输入法发起过内联请求。 */
-    private boolean requestSinceFinish;
-    /** 最近一次内联请求的时间（uptime）。新输入框的请求偶尔会略早于旧输入框的 onFinishInputView 到达。 */
-    private long lastRequestAt;
-    private static final long RECENT_REQUEST_MS = 300;
+    private static final long HOLD_MS = 250;
+    /** 等待期内系统又发起了内联请求（新建议马上会到）时，延长到这么久。 */
+    private static final long HOLD_WITH_REQUEST_MS = 400;
     private final Runnable endHold = () -> {
         holding = false;
-        sync();
+        flow("hold expired -> restore toolbar");
+        removeSuggestions();
     };
+
+    /** 切换输入框相关事件的时序日志（排查闪烁用），带 uptime 毫秒。 */
+    private static void flow(String event) {
+        L.i("ime: flow @" + android.os.SystemClock.uptimeMillis() + " " + event);
+    }
 
     /** 本次请求使用的配色和 chip 高度。 */
     private InlineStyles.Palette palette;
@@ -105,9 +107,8 @@ final class InlineController {
     // ---------------------------------------------------------------- request
 
     InlineSuggestionsRequest onCreateRequest(Bundle uiExtras) {
-        requestSinceFinish = true;
-        lastRequestAt = SystemClock.uptimeMillis();
-        if (holding) scheduleEndHold(HOLD_MAX_MS); // 建议马上会到，继续保留建议栏
+        flow("request" + (holding ? " (extend hold)" : ""));
+        if (holding) scheduleEndHold(HOLD_WITH_REQUEST_MS); // 新建议马上会到，继续保持
         try {
             ViewGroup toolbar = SogouNative.ready ? findToolbar() : null;
             chipHeightPx = InlineStyles.dp(ims, DEFAULT_CHIP_HEIGHT_DP);
@@ -167,8 +168,10 @@ final class InlineController {
         L.i("ime: onInlineSuggestionsResponse, count=" + list.size());
         final int gen = ++generation;
         if (list.isEmpty()) {
-            stopHolding();
-            removeSuggestions();
+            // 不立刻撤：可能马上就有新输入框的建议（见 holding）
+            boolean held = beginHold();
+            flow("empty response" + (held ? " -> hold" : " -> remove"));
+            if (!held) removeSuggestions();
             return;
         }
 
@@ -225,6 +228,8 @@ final class InlineController {
             added++;
         }
 
+        flow("show " + added + " suggestion(s)" + (holding ? " (replacing held)" : ""));
+        stopHolding();
         if (added == 0) {
             removeSuggestions();
             return;
@@ -233,7 +238,6 @@ final class InlineController {
         pinnedContainer.setVisibility(pinnedContainer.getChildCount() > 0 ? View.VISIBLE : View.GONE);
         scrollView.scrollTo(0, 0);
         hasSuggestions = true;
-        stopHolding();
         sync();
     }
 
@@ -243,27 +247,29 @@ final class InlineController {
     }
 
     /**
-     * @param hold 为 true 且当前正在显示建议时进入等待期（见 {@link #holding}），用于切换输入框；
-     *             为 false 时立即恢复搜狗工具栏（例如输入法销毁）。
+     * @param hold 为 true 时（输入框结束）先进入等待期，旧建议保持原样（见 {@link #holding}）；
+     *             为 false 时立即撤掉并恢复搜狗工具栏（例如输入法销毁）。
      */
     void clear(boolean hold) {
-        boolean wasShowing = hasSuggestions && strip != null && strip.getVisibility() == View.VISIBLE;
         generation++;
         dismissed = false;
         composing = false;
-        requestSinceFinish = false;
-        stopHolding();
-        if (hold && wasShowing) {
-            holding = true;
-            scheduleEndHold(HOLD_MAX_MS);
+        if (hold && beginHold()) {
+            flow("input finished -> hold");
+            return;
         }
+        if (hasSuggestions) flow("input finished -> remove");
+        stopHolding();
         removeSuggestions();
     }
 
-    /** 新输入框的键盘界面已启动（onStartInputView 之后）。没有内联请求说明不会有建议，尽快恢复搜狗工具栏。 */
-    void onInputViewStarted() {
-        boolean recent = SystemClock.uptimeMillis() - lastRequestAt < RECENT_REQUEST_MS;
-        if (holding && !requestSinceFinish && !recent) scheduleEndHold(NO_REQUEST_GRACE_MS);
+    /** 正在显示建议（或已在等待期）时进入/延续等待期，返回是否进入。 */
+    private boolean beginHold() {
+        boolean showing = hasSuggestions && strip != null && strip.getVisibility() == View.VISIBLE;
+        if (!showing && !holding) return false;
+        holding = true;
+        scheduleEndHold(HOLD_MS);
+        return true;
     }
 
     private void scheduleEndHold(long delayMs) {
@@ -318,7 +324,9 @@ final class InlineController {
         ViewGroup toolbar = mode == Mode.NATIVE ? toolbarRef.get() : null;
         if (mode == Mode.NATIVE) {
             // 工具栏图标组件不可见 = 搜狗在显示候选词等，让位
-            want &= toolbar != null && candidateContainerVisible(toolbar) && SogouNative.isFunctionViewVisible();
+            // 等待期内不看这个条件：换输入框时搜狗可能短暂切换工具栏组件的可见性，否则建议栏也会跟着闪
+            want &= toolbar != null && candidateContainerVisible(toolbar)
+                    && (holding || SogouNative.isFunctionViewVisible());
         } else {
             want &= !composing;
         }
