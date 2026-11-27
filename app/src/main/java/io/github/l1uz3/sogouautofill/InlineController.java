@@ -115,11 +115,11 @@ final class InlineController {
             Bundle style = InlineStyles.build(ims, palette);
             int screenW = ims.getResources().getDisplayMetrics().widthPixels;
             Size min = new Size(InlineStyles.dp(ims, 40), chipHeightPx);
-            // 单个条目最多占可用宽度（整条减去 ×）的 75%：一条长的账号也能基本显示全，
-            // 同时能露出下一条的开头，提示可以横向滑动
+            // 单个条目最多占可用宽度（整条减去 ×）的 60%：太长的名称会被 TitleFit 截短（用户名保证可见），
+            // 同时能露出下一条，提示可以横向滑动
             int available = (toolbar != null && toolbar.getWidth() > 0 ? toolbar.getWidth() : screenW)
                     - InlineStyles.dp(ims, 56);
-            Size max = new Size(Math.max(min.getWidth(), available * 3 / 4), chipHeightPx);
+            Size max = new Size(Math.max(min.getWidth(), available * 3 / 5), chipHeightPx);
             InlinePresentationSpec spec = new InlinePresentationSpec.Builder(min, max)
                     .setStyle(style)
                     .build();
