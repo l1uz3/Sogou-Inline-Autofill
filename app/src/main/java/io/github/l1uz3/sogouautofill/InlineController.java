@@ -112,11 +112,15 @@ final class InlineController {
      * 期满仍没有新建议才真正撤掉、恢复搜狗工具栏。
      */
     private boolean holding;
-    private static final long HOLD_MS = 150;
+    /** 真机日志：同一页面切换输入框时，“撤销 → 新建议”间隔 10~66ms。 */
+    private static final long HOLD_MS = 100;
+    /** 当前等待期的截止时间（uptime），0 表示不在等待期。 */
+    private long holdUntil;
     /** 等待期内系统又发起了内联请求（新建议马上会到）时，延长到这么久。 */
     private static final long HOLD_WITH_REQUEST_MS = 400;
     private final Runnable endHold = () -> {
         holding = false;
+        holdUntil = 0;
         flow("hold expired -> restore toolbar");
         removeSuggestions();
     };
@@ -346,14 +350,19 @@ final class InlineController {
         return true;
     }
 
+    /** 设定等待期截止时间：只延长、不缩短（例如请求延长到 400ms 后紧跟的空建议不会把它改回 100ms）。 */
     private void scheduleEndHold(long delayMs) {
         if (strip == null) return;
+        long until = android.os.SystemClock.uptimeMillis() + delayMs;
+        if (until <= holdUntil) return;
+        holdUntil = until;
         strip.removeCallbacks(endHold);
         strip.postDelayed(endHold, delayMs);
     }
 
     private void stopHolding() {
         holding = false;
+        holdUntil = 0;
         if (strip != null) strip.removeCallbacks(endHold);
     }
 
