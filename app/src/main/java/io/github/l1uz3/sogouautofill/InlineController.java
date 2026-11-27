@@ -50,11 +50,46 @@ final class InlineController {
 
     private final InputMethodService ims;
 
-    private StripLayout strip;          // 整条：[固定区][可横向滚动区][×]
-    private LinearLayout pinnedContainer;
-    private LinearLayout scrollContainer;
-    private HorizontalScrollView scrollView;
+    private StripLayout strip;          // 整条：[建议层 layers][×]
+    /** 建议层：每次显示建议都新建一行 {@link Row} 叠在上面，旧行在新行画面就绪后再移除（双缓冲）。 */
+    private FrameLayout layers;
+    /** 当前显示的那一行。 */
+    private Row currentRow;
     private CloseButton closeButton;
+
+    /** 一行建议：[固定区][可横向滚动区]。 */
+    private static final class Row {
+        final LinearLayout root;
+        final LinearLayout pinned;
+        final HorizontalScrollView scrollView;
+        final LinearLayout scroll;
+
+        Row(Context ctx) {
+            root = new LinearLayout(ctx);
+            root.setOrientation(LinearLayout.HORIZONTAL);
+            root.setGravity(Gravity.CENTER_VERTICAL);
+
+            pinned = new LinearLayout(ctx);
+            pinned.setOrientation(LinearLayout.HORIZONTAL);
+            pinned.setGravity(Gravity.CENTER_VERTICAL);
+            root.addView(pinned, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+            scrollView = new HorizontalScrollView(ctx);
+            scrollView.setHorizontalScrollBarEnabled(false);
+            scrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+            scroll = new LinearLayout(ctx);
+            scroll.setOrientation(LinearLayout.HORIZONTAL);
+            scroll.setGravity(Gravity.CENTER_VERTICAL);
+            scrollView.addView(scroll, new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            root.addView(scrollView, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        }
+    }
+
+    /** 新行画面迟迟没就绪时，最多等这么久就移除旧行。 */
+    private static final long SWAP_TIMEOUT_MS = 250;
 
     private Mode mode = Mode.NONE;
     private WeakReference<ViewGroup> toolbarRef = new WeakReference<>(null);
@@ -68,6 +103,26 @@ final class InlineController {
     private boolean composing;
     /** 用户在当前输入框点了 ×。 */
     private boolean dismissed;
+    /**
+     * 撤建议前的等待期。在同一页面来回点用户名/密码时，系统会先发一个空建议（撤掉旧输入框的建议）、
+     * 旧输入框结束，然后新输入框的建议才到。如果收到空建议或输入框结束就立刻撤掉，
+     * 每次都会先露出搜狗工具栏图标、紧接着又被新建议盖住，表现为工具栏闪烁。
+     *
+     * 所以这两种情况都先<b>保持原样</b>（旧建议留在原位、图标继续隐藏）：等待期内新建议到来就原地替换，
+     * 期满仍没有新建议才真正撤掉、恢复搜狗工具栏。
+     */
+    private boolean holding;
+    /** 真机日志：同一页面切换输入框时，“撤销 → 新建议”间隔 10~66ms。 */
+    private static final long HOLD_MS = 100;
+    /** 当前等待期的截止时间（uptime），0 表示不在等待期。 */
+    private long holdUntil;
+    /** 等待期内系统又发起了内联请求（新建议马上会到）时，延长到这么久。 */
+    private static final long HOLD_WITH_REQUEST_MS = 400;
+    private final Runnable endHold = () -> {
+        holding = false;
+        holdUntil = 0;
+        removeSuggestions();
+    };
 
     /** 本次请求使用的配色和 chip 高度。 */
     private InlineStyles.Palette palette;
@@ -85,6 +140,7 @@ final class InlineController {
     // ---------------------------------------------------------------- request
 
     InlineSuggestionsRequest onCreateRequest(Bundle uiExtras) {
+        if (holding) scheduleEndHold(HOLD_WITH_REQUEST_MS); // 新建议马上会到，继续保持
         try {
             ViewGroup toolbar = SogouNative.ready ? findToolbar() : null;
             chipHeightPx = InlineStyles.dp(ims, DEFAULT_CHIP_HEIGHT_DP);
@@ -115,11 +171,11 @@ final class InlineController {
             Bundle style = InlineStyles.build(ims, palette);
             int screenW = ims.getResources().getDisplayMetrics().widthPixels;
             Size min = new Size(InlineStyles.dp(ims, 40), chipHeightPx);
-            // 单个条目最多占可用宽度（整条减去 ×）的 75%：一条长的账号也能基本显示全，
-            // 同时能露出下一条的开头，提示可以横向滑动
+            // 单个条目最多占可用宽度（整条减去 ×）的 60%：太长的名称会被 TitleFit 截短（用户名保证可见），
+            // 同时能露出下一条，提示可以横向滑动
             int available = (toolbar != null && toolbar.getWidth() > 0 ? toolbar.getWidth() : screenW)
                     - InlineStyles.dp(ims, 56);
-            Size max = new Size(Math.max(min.getWidth(), available * 3 / 4), chipHeightPx);
+            Size max = new Size(Math.max(min.getWidth(), available * 3 / 5), chipHeightPx);
             InlinePresentationSpec spec = new InlinePresentationSpec.Builder(min, max)
                     .setStyle(style)
                     .build();
@@ -144,7 +200,8 @@ final class InlineController {
         L.i("ime: onInlineSuggestionsResponse, count=" + list.size());
         final int gen = ++generation;
         if (list.isEmpty()) {
-            removeSuggestions();
+            // 不立刻撤：可能马上就有新输入框的建议（见 holding）
+            if (!beginHold()) removeSuggestions();
             return;
         }
 
@@ -172,8 +229,13 @@ final class InlineController {
 
     private void show(List<InlineSuggestion> list, InlineContentView[] views) {
         if (!ensureStrip()) return;
-        pinnedContainer.removeAllViews();
-        scrollContainer.removeAllViews();
+        // 新建一行叠在旧行上面；旧行等新行的画面就绪后再移除，避免交接时空一两帧（轻微闪烁）
+        Row oldRow = currentRow;
+        Row row = new Row(ims);
+        layers.addView(row.root, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        currentRow = row;
+        java.util.ArrayList<InlineContentView> chips = new java.util.ArrayList<>();
 
         int margin = InlineStyles.dp(ims, 4);
         int maxH = chipHeightPx > 0 ? chipHeightPx : InlineStyles.dp(ims, DEFAULT_CHIP_HEIGHT_DP);
@@ -194,37 +256,107 @@ final class InlineController {
             lp.gravity = Gravity.CENTER_VERTICAL;
             // “固定”条目（例如 Bitwarden 的打开密码库图标）放在左侧不随滚动
             boolean pinned = list.get(i).getInfo().isPinned();
-            LinearLayout target = pinned ? pinnedContainer : scrollContainer;
+            LinearLayout target = pinned ? row.pinned : row.scroll;
             // 原生模式下条目之间用细竖线分隔，模仿搜狗剪贴板栏
             if (mode == Mode.NATIVE && target.getChildCount() > 0) target.addView(newDivider());
             target.addView(v, lp);
+            chips.add(v);
             added++;
         }
 
+        stopHolding();
         if (added == 0) {
             removeSuggestions();
             return;
         }
         applyStripColors();
-        pinnedContainer.setVisibility(pinnedContainer.getChildCount() > 0 ? View.VISIBLE : View.GONE);
-        scrollView.scrollTo(0, 0);
+        row.pinned.setVisibility(row.pinned.getChildCount() > 0 ? View.VISIBLE : View.GONE);
+        row.scrollView.scrollTo(0, 0);
         hasSuggestions = true;
         sync();
+        retireRow(oldRow, chips);
+    }
+
+    /**
+     * 等新行所有建议的 Surface 都创建好、再过一帧，才移除旧行；超时兜底。
+     * 旧行不在显示（例如建议栏本来是隐藏的）时直接移除。
+     */
+    private void retireRow(Row oldRow, List<InlineContentView> newChips) {
+        if (oldRow == null) return;
+        final Runnable remove = () -> {
+            if (oldRow.root.getParent() == layers) layers.removeView(oldRow.root);
+        };
+        if (strip.getVisibility() != View.VISIBLE || newChips.isEmpty()) {
+            remove.run();
+            return;
+        }
+        final int[] pending = {newChips.size()};
+        for (InlineContentView chip : newChips) {
+            chip.setSurfaceControlCallback(new InlineContentView.SurfaceControlCallback() {
+                @Override
+                public void onCreated(android.view.SurfaceControl surfaceControl) {
+                    if (--pending[0] == 0) {
+                        // 再等一帧，确保新画面已经合成到屏幕上
+                        strip.postOnAnimation(() -> strip.postOnAnimation(remove));
+                    }
+                }
+
+                @Override
+                public void onDestroyed(android.view.SurfaceControl surfaceControl) {
+                }
+            });
+        }
+        strip.postDelayed(remove, SWAP_TIMEOUT_MS);
     }
 
     /** 切换输入框 / 收起键盘：清空建议并重置“已关闭”状态。 */
     void clear() {
+        clear(false);
+    }
+
+    /**
+     * @param hold 为 true 时（输入框结束）先进入等待期，旧建议保持原样（见 {@link #holding}）；
+     *             为 false 时立即撤掉并恢复搜狗工具栏（例如输入法销毁）。
+     */
+    void clear(boolean hold) {
         generation++;
         dismissed = false;
         composing = false;
+        if (hold && beginHold()) return;
+        stopHolding();
         removeSuggestions();
+    }
+
+    /** 正在显示建议（或已在等待期）时进入/延续等待期，返回是否进入。 */
+    private boolean beginHold() {
+        boolean showing = hasSuggestions && strip != null && strip.getVisibility() == View.VISIBLE;
+        if (!showing && !holding) return false;
+        holding = true;
+        scheduleEndHold(HOLD_MS);
+        return true;
+    }
+
+    /** 设定等待期截止时间：只延长、不缩短（例如请求延长到 400ms 后紧跟的空建议不会把它改回 100ms）。 */
+    private void scheduleEndHold(long delayMs) {
+        if (strip == null) return;
+        long until = android.os.SystemClock.uptimeMillis() + delayMs;
+        if (until <= holdUntil) return;
+        holdUntil = until;
+        strip.removeCallbacks(endHold);
+        strip.postDelayed(endHold, delayMs);
+    }
+
+    private void stopHolding() {
+        holding = false;
+        holdUntil = 0;
+        if (strip != null) strip.removeCallbacks(endHold);
     }
 
     private void removeSuggestions() {
         hasSuggestions = false;
         if (strip == null) return;
-        pinnedContainer.removeAllViews();
-        scrollContainer.removeAllViews();
+        layers.removeAllViews();
+        currentRow = null;
         sync();
     }
 
@@ -257,11 +389,13 @@ final class InlineController {
      */
     private boolean sync() {
         if (strip == null) return false;
-        boolean want = hasSuggestions && !dismissed && strip.getParent() != null;
+        boolean want = (hasSuggestions || holding) && !dismissed && strip.getParent() != null;
         ViewGroup toolbar = mode == Mode.NATIVE ? toolbarRef.get() : null;
         if (mode == Mode.NATIVE) {
             // 工具栏图标组件不可见 = 搜狗在显示候选词等，让位
-            want &= toolbar != null && candidateContainerVisible(toolbar) && SogouNative.isFunctionViewVisible();
+            // 等待期内不看这个条件：换输入框时搜狗可能短暂切换工具栏组件的可见性，否则建议栏也会跟着闪
+            want &= toolbar != null && candidateContainerVisible(toolbar)
+                    && (holding || SogouNative.isFunctionViewVisible());
         } else {
             want &= !composing;
         }
@@ -380,8 +514,9 @@ final class InlineController {
         if (mode == Mode.NATIVE) {
             strip.setBackground(null); // 透出搜狗皮肤
             closeButton.setColor(p.title);
-            if (pinnedContainer.getChildCount() > 0 && scrollContainer.getChildCount() > 0) {
-                pinnedContainer.addView(newDivider());
+            Row row = currentRow;
+            if (row != null && row.pinned.getChildCount() > 0 && row.scroll.getChildCount() > 0) {
+                row.pinned.addView(newDivider());
             }
         } else {
             strip.setBackgroundColor(InlineStyles.isNight(ims) ? 0xFF202124 : 0xFFF1F3F4);
@@ -474,21 +609,8 @@ final class InlineController {
         strip.setClickable(true);
         strip.setVisibility(View.GONE);
 
-        pinnedContainer = new LinearLayout(ims);
-        pinnedContainer.setOrientation(LinearLayout.HORIZONTAL);
-        pinnedContainer.setGravity(Gravity.CENTER_VERTICAL);
-        strip.addView(pinnedContainer, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        scrollView = new HorizontalScrollView(ims);
-        scrollView.setHorizontalScrollBarEnabled(false);
-        scrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        scrollContainer = new LinearLayout(ims);
-        scrollContainer.setOrientation(LinearLayout.HORIZONTAL);
-        scrollContainer.setGravity(Gravity.CENTER_VERTICAL);
-        scrollView.addView(scrollContainer, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        strip.addView(scrollView, new LinearLayout.LayoutParams(
+        layers = new FrameLayout(ims);
+        strip.addView(layers, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
         // × ：在当前输入框内关闭建议，恢复搜狗原本的工具栏。

@@ -92,6 +92,13 @@ final class InlineStyles {
         return mode == Configuration.UI_MODE_NIGHT_YES;
     }
 
+    /** chip 左右内边距（dp）。 */
+    static final int CHIP_PADDING_DP = 8;
+
+    static float spToPx(Context ctx, float sp) {
+        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, sp, ctx.getResources().getDisplayMetrics());
+    }
+
     static int dp(Context ctx, float v) {
         return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
                 ctx.getResources().getDisplayMetrics()));
@@ -134,7 +141,7 @@ final class InlineStyles {
     static Bundle build(Context ctx, Palette p) {
         ViewStyle chip = new ViewStyle.Builder()
                 .setBackgroundColor(p.chipBackground)
-                .setPadding(dp(ctx, 10), 0, dp(ctx, 10), 0)
+                .setPadding(dp(ctx, CHIP_PADDING_DP), 0, dp(ctx, CHIP_PADDING_DP), 0)
                 .build();
 
         int iconSize = dp(ctx, Math.max(18, Math.min(26, p.titleSp * 1.2f)));
@@ -176,6 +183,10 @@ final class InlineStyles {
                 .setSubtitleStyle(subtitle)
                 .build();
 
-        return UiVersions.newStylesBuilder().addStyle(style).build();
+        Bundle bundle = UiVersions.newStylesBuilder().addStyle(style).build();
+        // 给 system_server 的 TitleFit 用：名称太长时截短名称，保证用户名能显示出来
+        int reserved = dp(ctx, CHIP_PADDING_DP) * 2 + dp(ctx, 6) + dp(ctx, 8);
+        TitleFit.putParams(bundle, spToPx(ctx, p.titleSp), spToPx(ctx, p.subtitleSp), reserved);
+        return bundle;
     }
 }

@@ -1,6 +1,9 @@
 package io.github.l1uz3.sogouautofill;
 
+import android.app.slice.Slice;
+import android.service.autofill.InlinePresentation;
 import android.view.inputmethod.InputMethodInfo;
+import android.widget.inline.InlinePresentationSpec;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -37,6 +40,24 @@ final class SystemHooks {
             L.i("system_server: hooked InputMethodInfo constructors");
         } catch (Throwable t) {
             L.e("system_server: failed to hook InputMethodInfo constructors", t);
+        }
+
+        // 名称太长时截短名称，保证用户名显示（见 TitleFit）。只处理带本模块参数的请求
+        try {
+            XposedBridge.hookAllConstructors(InlinePresentation.class, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    InlinePresentation ip = (InlinePresentation) param.thisObject;
+                    InlinePresentationSpec spec = ip.getInlinePresentationSpec();
+                    if (spec == null || spec.getStyle() == null) return;
+                    Slice original = ip.getSlice();
+                    Slice fitted = TitleFit.fit(original, spec.getStyle(), spec.getMaxSize().getWidth());
+                    if (fitted != original) XposedHelpers.setObjectField(ip, "mSlice", fitted);
+                }
+            });
+            L.i("system_server: hooked InlinePresentation (keep username visible)");
+        } catch (Throwable t) {
+            L.e("system_server: failed to hook InlinePresentation", t);
         }
 
         try {
