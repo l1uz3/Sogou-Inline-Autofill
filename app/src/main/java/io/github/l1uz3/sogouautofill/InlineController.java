@@ -121,14 +121,8 @@ final class InlineController {
     private final Runnable endHold = () -> {
         holding = false;
         holdUntil = 0;
-        flow("hold expired -> restore toolbar");
         removeSuggestions();
     };
-
-    /** 切换输入框相关事件的时序日志（排查闪烁用），带 uptime 毫秒。 */
-    private static void flow(String event) {
-        L.i("ime: flow @" + android.os.SystemClock.uptimeMillis() + " " + event);
-    }
 
     /** 本次请求使用的配色和 chip 高度。 */
     private InlineStyles.Palette palette;
@@ -146,7 +140,6 @@ final class InlineController {
     // ---------------------------------------------------------------- request
 
     InlineSuggestionsRequest onCreateRequest(Bundle uiExtras) {
-        flow("request" + (holding ? " (extend hold)" : ""));
         if (holding) scheduleEndHold(HOLD_WITH_REQUEST_MS); // 新建议马上会到，继续保持
         try {
             ViewGroup toolbar = SogouNative.ready ? findToolbar() : null;
@@ -208,9 +201,7 @@ final class InlineController {
         final int gen = ++generation;
         if (list.isEmpty()) {
             // 不立刻撤：可能马上就有新输入框的建议（见 holding）
-            boolean held = beginHold();
-            flow("empty response" + (held ? " -> hold" : " -> remove"));
-            if (!held) removeSuggestions();
+            if (!beginHold()) removeSuggestions();
             return;
         }
 
@@ -273,7 +264,6 @@ final class InlineController {
             added++;
         }
 
-        flow("show " + added + " suggestion(s)" + (holding ? " (replacing held)" : ""));
         stopHolding();
         if (added == 0) {
             removeSuggestions();
@@ -332,11 +322,7 @@ final class InlineController {
         generation++;
         dismissed = false;
         composing = false;
-        if (hold && beginHold()) {
-            flow("input finished -> hold");
-            return;
-        }
-        if (hasSuggestions) flow("input finished -> remove");
+        if (hold && beginHold()) return;
         stopHolding();
         removeSuggestions();
     }

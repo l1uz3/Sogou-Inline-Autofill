@@ -82,7 +82,6 @@ LSPosed 管理器 → 日志，搜索 `[SogouInlineAutofill]`（更详细的日�
 | `ime: strip attached inside Sogou Toolbar` | 建议栏已放进搜狗工具栏 |
 | `ime: onCreateInlineSuggestionsRequest -> ...` | 系统向搜狗索要了内联请求（没有这行说明系统侧没生效，或自动填充服务未触发） |
 | `ime: onInlineSuggestionsResponse, count=N` | 收到 Bitwarden 的建议 |
-| `ime: flow @毫秒 ...` | 切换输入框时的事件时序（输入框结束、空建议、等待期、显示建议），排查闪烁用 |
 
 常见问题：
 
