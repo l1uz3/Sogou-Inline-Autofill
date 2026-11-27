@@ -92,6 +92,10 @@ final class InlineStyles {
         return mode == Configuration.UI_MODE_NIGHT_YES;
     }
 
+    static float spToPx(Context ctx, float sp) {
+        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, sp, ctx.getResources().getDisplayMetrics());
+    }
+
     static int dp(Context ctx, float v) {
         return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
                 ctx.getResources().getDisplayMetrics()));
@@ -176,6 +180,10 @@ final class InlineStyles {
                 .setSubtitleStyle(subtitle)
                 .build();
 
-        return UiVersions.newStylesBuilder().addStyle(style).build();
+        Bundle bundle = UiVersions.newStylesBuilder().addStyle(style).build();
+        // 给 system_server 的 TitleFit 用：名称太长时截短名称，保证用户名能显示出来
+        int reserved = dp(ctx, 10) * 2 + dp(ctx, 6) + dp(ctx, 8);
+        TitleFit.putParams(bundle, spToPx(ctx, p.titleSp), spToPx(ctx, p.subtitleSp), reserved);
+        return bundle;
     }
 }
