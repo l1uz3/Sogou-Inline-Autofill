@@ -50,11 +50,46 @@ final class InlineController {
 
     private final InputMethodService ims;
 
-    private StripLayout strip;          // 整条：[固定区][可横向滚动区][×]
-    private LinearLayout pinnedContainer;
-    private LinearLayout scrollContainer;
-    private HorizontalScrollView scrollView;
+    private StripLayout strip;          // 整条：[建议层 layers][×]
+    /** 建议层：每次显示建议都新建一行 {@link Row} 叠在上面，旧行在新行画面就绪后再移除（双缓冲）。 */
+    private FrameLayout layers;
+    /** 当前显示的那一行。 */
+    private Row currentRow;
     private CloseButton closeButton;
+
+    /** 一行建议：[固定区][可横向滚动区]。 */
+    private static final class Row {
+        final LinearLayout root;
+        final LinearLayout pinned;
+        final HorizontalScrollView scrollView;
+        final LinearLayout scroll;
+
+        Row(Context ctx) {
+            root = new LinearLayout(ctx);
+            root.setOrientation(LinearLayout.HORIZONTAL);
+            root.setGravity(Gravity.CENTER_VERTICAL);
+
+            pinned = new LinearLayout(ctx);
+            pinned.setOrientation(LinearLayout.HORIZONTAL);
+            pinned.setGravity(Gravity.CENTER_VERTICAL);
+            root.addView(pinned, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+            scrollView = new HorizontalScrollView(ctx);
+            scrollView.setHorizontalScrollBarEnabled(false);
+            scrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+            scroll = new LinearLayout(ctx);
+            scroll.setOrientation(LinearLayout.HORIZONTAL);
+            scroll.setGravity(Gravity.CENTER_VERTICAL);
+            scrollView.addView(scroll, new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            root.addView(scrollView, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        }
+    }
+
+    /** 新行画面迟迟没就绪时，最多等这么久就移除旧行。 */
+    private static final long SWAP_TIMEOUT_MS = 250;
 
     private Mode mode = Mode.NONE;
     private WeakReference<ViewGroup> toolbarRef = new WeakReference<>(null);
@@ -199,8 +234,13 @@ final class InlineController {
 
     private void show(List<InlineSuggestion> list, InlineContentView[] views) {
         if (!ensureStrip()) return;
-        pinnedContainer.removeAllViews();
-        scrollContainer.removeAllViews();
+        // 新建一行叠在旧行上面；旧行等新行的画面就绪后再移除，避免交接时空一两帧（轻微闪烁）
+        Row oldRow = currentRow;
+        Row row = new Row(ims);
+        layers.addView(row.root, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        currentRow = row;
+        java.util.ArrayList<InlineContentView> chips = new java.util.ArrayList<>();
 
         int margin = InlineStyles.dp(ims, 4);
         int maxH = chipHeightPx > 0 ? chipHeightPx : InlineStyles.dp(ims, DEFAULT_CHIP_HEIGHT_DP);
@@ -221,10 +261,11 @@ final class InlineController {
             lp.gravity = Gravity.CENTER_VERTICAL;
             // “固定”条目（例如 Bitwarden 的打开密码库图标）放在左侧不随滚动
             boolean pinned = list.get(i).getInfo().isPinned();
-            LinearLayout target = pinned ? pinnedContainer : scrollContainer;
+            LinearLayout target = pinned ? row.pinned : row.scroll;
             // 原生模式下条目之间用细竖线分隔，模仿搜狗剪贴板栏
             if (mode == Mode.NATIVE && target.getChildCount() > 0) target.addView(newDivider());
             target.addView(v, lp);
+            chips.add(v);
             added++;
         }
 
@@ -235,10 +276,43 @@ final class InlineController {
             return;
         }
         applyStripColors();
-        pinnedContainer.setVisibility(pinnedContainer.getChildCount() > 0 ? View.VISIBLE : View.GONE);
-        scrollView.scrollTo(0, 0);
+        row.pinned.setVisibility(row.pinned.getChildCount() > 0 ? View.VISIBLE : View.GONE);
+        row.scrollView.scrollTo(0, 0);
         hasSuggestions = true;
         sync();
+        retireRow(oldRow, chips);
+    }
+
+    /**
+     * 等新行所有建议的 Surface 都创建好、再过一帧，才移除旧行；超时兜底。
+     * 旧行不在显示（例如建议栏本来是隐藏的）时直接移除。
+     */
+    private void retireRow(Row oldRow, List<InlineContentView> newChips) {
+        if (oldRow == null) return;
+        final Runnable remove = () -> {
+            if (oldRow.root.getParent() == layers) layers.removeView(oldRow.root);
+        };
+        if (strip.getVisibility() != View.VISIBLE || newChips.isEmpty()) {
+            remove.run();
+            return;
+        }
+        final int[] pending = {newChips.size()};
+        for (InlineContentView chip : newChips) {
+            chip.setSurfaceControlCallback(new InlineContentView.SurfaceControlCallback() {
+                @Override
+                public void onCreated(android.view.SurfaceControl surfaceControl) {
+                    if (--pending[0] == 0) {
+                        // 再等一帧，确保新画面已经合成到屏幕上
+                        strip.postOnAnimation(() -> strip.postOnAnimation(remove));
+                    }
+                }
+
+                @Override
+                public void onDestroyed(android.view.SurfaceControl surfaceControl) {
+                }
+            });
+        }
+        strip.postDelayed(remove, SWAP_TIMEOUT_MS);
     }
 
     /** 切换输入框 / 收起键盘：清空建议并重置“已关闭”状态。 */
@@ -286,8 +360,8 @@ final class InlineController {
     private void removeSuggestions() {
         hasSuggestions = false;
         if (strip == null) return;
-        pinnedContainer.removeAllViews();
-        scrollContainer.removeAllViews();
+        layers.removeAllViews();
+        currentRow = null;
         sync();
     }
 
@@ -445,8 +519,9 @@ final class InlineController {
         if (mode == Mode.NATIVE) {
             strip.setBackground(null); // 透出搜狗皮肤
             closeButton.setColor(p.title);
-            if (pinnedContainer.getChildCount() > 0 && scrollContainer.getChildCount() > 0) {
-                pinnedContainer.addView(newDivider());
+            Row row = currentRow;
+            if (row != null && row.pinned.getChildCount() > 0 && row.scroll.getChildCount() > 0) {
+                row.pinned.addView(newDivider());
             }
         } else {
             strip.setBackgroundColor(InlineStyles.isNight(ims) ? 0xFF202124 : 0xFFF1F3F4);
@@ -539,21 +614,8 @@ final class InlineController {
         strip.setClickable(true);
         strip.setVisibility(View.GONE);
 
-        pinnedContainer = new LinearLayout(ims);
-        pinnedContainer.setOrientation(LinearLayout.HORIZONTAL);
-        pinnedContainer.setGravity(Gravity.CENTER_VERTICAL);
-        strip.addView(pinnedContainer, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        scrollView = new HorizontalScrollView(ims);
-        scrollView.setHorizontalScrollBarEnabled(false);
-        scrollView.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        scrollContainer = new LinearLayout(ims);
-        scrollContainer.setOrientation(LinearLayout.HORIZONTAL);
-        scrollContainer.setGravity(Gravity.CENTER_VERTICAL);
-        scrollView.addView(scrollContainer, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        strip.addView(scrollView, new LinearLayout.LayoutParams(
+        layers = new FrameLayout(ims);
+        strip.addView(layers, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
         // × ：在当前输入框内关闭建议，恢复搜狗原本的工具栏。
